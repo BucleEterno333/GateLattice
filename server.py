@@ -64,10 +64,10 @@ class PaymentAnalyzer:
             logger.info(f"🔍 CONTENIDO (300 chars): {page_content[:300]}")
             
             # LIVE - busca ESTAS palabras EXACTAS
-            if 'gracias' in page_content_lower:
+            if 'pago' in page_content_lower:
                 final_status = 'live'
-                evidence.append('LIVE: palabra "gracias" encontrada')
-                logger.info(f"✅ ENCONTRADO 'gracias' - ES LIVE")
+                evidence.append('LIVE: palabra "pago" encontrada')
+                logger.info(f"✅ ENCONTRADO 'pago' - ES LIVE")
             elif 'éxito' in page_content_lower or 'exito' in page_content_lower:
                 final_status = 'live'
                 evidence.append('LIVE: palabra "éxito" encontrada')
@@ -88,16 +88,20 @@ class PaymentAnalyzer:
                 logger.info(f"❌ ENCONTRADO 'venció' - ES DEAD")
             
             # 3DS - busca ESTAS palabras
-            elif '3d' in page_content_lower or 'secure' in page_content_lower:
+            elif '3d' in page_content_lower:
                 final_status = 'threeds'
-                evidence.append('3DS: palabra "3d/secure" encontrada')
-                logger.info(f"🛡️ ENCONTRADO '3d/secure' - ES 3DS")
+                evidence.append('3DS: palabra "3d" encontrada')
+                logger.info(f"🛡️ ENCONTRADO '3d' - ES 3D")
+            elif 'secure' in page_content_lower:
+                final_status = 'threeds'
+                evidence.append('3DS: palabra "secure" encontrada')
+                logger.info(f"🛡️ ENCONTRADO 'secure' - ES 3D")
             
             # Si no encuentra NADA
             else:
                 final_status = 'unknown'
                 evidence.append('NO se encontraron palabras clave')
-                logger.info(f"❓ NO se encontraron palabras clave - usando simulación")
+                logger.info(f"❓ NO se encontraron palabras clave")
             
         except Exception as e:
             evidence.append(f'Error: {str(e)}')
