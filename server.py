@@ -295,35 +295,47 @@ class EdupamChecker:
             logger.info(f"12. HTML (200 chars): {page_text[:200]}")
             
             # Tomar screenshot ÚNICO para esta tarjeta
+            # Tomar screenshot ÚNICO para esta tarjeta
             screenshot_b64 = None
             try:
+                # 1. Hacer scroll para forzar renderizado de elementos lazy
                 page.evaluate("""
                     () => {
-                        return new Promise((resolve) => {
-                            let totalHeight = 0;
-                            const distance = 100;
-                            const scrollHeight = document.body.scrollHeight;
-                            
-                            const timer = setInterval(() => {
-                                window.scrollBy(0, distance);
-                                totalHeight += distance;
-                                
-                                if(totalHeight >= scrollHeight) {
-                                    clearInterval(timer);
-                                    // Volver al inicio
-                                    window.scrollTo(0, 0);
-                                    resolve();
-                                }
-                            }, 50);
-                        });
+                        const height = document.body.scrollHeight;
+                        window.scrollTo(0, height);
+                        window.scrollTo(0, 0);
                     }
                 """)
-
-
+                
+                # 2. Esperar un poco después del scroll
+                page.wait_for_timeout(300)
+                
+                # 3. Obtener altura total REAL (puede haber cambiado después del scroll)
+                total_height = page.evaluate("""
+                    () => {
+                        return Math.max(
+                            document.body.scrollHeight,
+                            document.documentElement.scrollHeight
+                        );
+                    }
+                """)
+                
+                # 4. Ajustar viewport si es necesario
+                current_viewport = page.viewport_size
+                if total_height > current_viewport['height']:
+                    page.set_viewport_size({
+                        'width': current_viewport['width'],
+                        'height': total_height + 50  # Margen extra por seguridad
+                    })
+                
+                # 5. Esperar a que se re-renderice con el nuevo tamaño
+                page.wait_for_timeout(1000)
+                
+                # 6. Tomar screenshot
                 screenshot_bytes = page.screenshot(full_page=True)
                 screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
                 logger.info(f"13. 📸 Screenshot ÚNICO tomado para ****{card_last4}")
-                logger.info(f"14. {screenshot_b64}")
+                logger.info(f"13. {screenshot_b64}")
             except Exception as e:
                 logger.error(f"Error screenshot: {e}")
             
