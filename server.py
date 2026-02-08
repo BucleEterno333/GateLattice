@@ -59,10 +59,10 @@ class PaymentAnalyzer:
             current_url_lower = current_url.lower()
             
             # Solo busca las keywords básicas
-            if 'gracias' in page_content or 'exito' in page_content or 'confirmación' in page_content:
+            if 'pago' in page_content or 'exito' in page_content or 'confirmación' in page_content:
                 final_status = 'live'
                 evidence.append('LIVE detectado')
-            elif 'rechazada' in page_content or 'declinada' in page_content or 'error' in page_content:
+            elif 'tarjeta' in page_content or 'rechazada' in page_content or 'incorrecto' in page_content or 'venció' in page_content:
                 final_status = 'decline'
                 evidence.append('DECLINE detectado')
             elif '3d' in page_content or 'secure' in page_content or 'autenticacion' in page_content:
