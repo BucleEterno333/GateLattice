@@ -44,7 +44,7 @@ checking_status = {
 }
 
 
-class CaptchaSolved:
+class CaptchaSolver:
     """Clase para resolver captchas usando 2Captcha"""
     
     def __init__(self, api_key):
@@ -214,7 +214,7 @@ class EdupamChecker:
             'codigo': ''
         }
         self.analyzer = PaymentAnalyzer()
-        self.captcha_solved = CaptchaSolved(API_KEY_2CAPTCHA) if API_KEY_2CAPTCHA else None
+        self.captcha_solver = CaptchaSolver(API_KEY_2CAPTCHA) if API_KEY_2CAPTCHA else None
     
     def parse_card_data(self, card_string):
         """Parsear string de tarjeta en formato: NUMERO|MES|AÑO|CVV"""
@@ -330,7 +330,7 @@ class EdupamChecker:
             # Resolver captcha
             logger.info(f"🔄 Resolviendo captcha para ****{card_last4}...")
             page_url = page.url
-            solution = self.captcha_solved.solve_recaptcha_v2(site_key, page_url)
+            solution = self.captcha_solver.solve_recaptcha_v2(site_key, page_url)
             
             if not solution:
                 logger.error(f"❌ No se pudo resolver el captcha para ****{card_last4}")
