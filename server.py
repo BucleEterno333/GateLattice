@@ -317,7 +317,7 @@ class EdupamChecker:
             page_content = page.content()
             
             analysis = self.analyzer.analyze_payment_result(
-                page_content, current_url, card_info['numero'][-4:]
+                current_url, card_info['numero'][-4:]
             )
             
             # Determinar estado final
