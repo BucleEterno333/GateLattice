@@ -49,7 +49,6 @@ class PaymentAnalyzer:
     """Analizador de respuestas de pagos para Edupam"""
     
     @staticmethod
-    @staticmethod
     def analyze_payment_result(page, current_url, card_last4):
         """Versión simplificada"""
         evidence = []
@@ -91,92 +90,9 @@ class PaymentAnalyzer:
             'evidence': evidence,
             'url': current_url
         }
-        """
-        Analiza el resultado del pago basándose en múltiples métodos.
-        Ahora recibe el objeto 'page' completo, no solo el contenido.
-        """
-        evidence = []
-        final_status = 'unknown'
-        screenshot_b64 = None
-        
-        try:
-            # 1. PRIMERO obtener el contenido de la página
-            page_content = page.content()
-            page_content_lower = page_content.lower()
-            current_url_lower = current_url.lower()
-            
-            # 2. LUEGO tomar screenshot (opcional, puedes comentarlo si da problemas)
-            try:
-                screenshot_bytes = page.screenshot()
-                screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-                evidence.append('Screenshot tomado exitosamente')
-                logger.info(f"{screenshot_b64}")
+    
 
-            except Exception as screenshot_error:
-                logger.warning(f"No se pudo tomar screenshot: {screenshot_error}")
-                evidence.append('Screenshot no disponible')
-            
-            # 3. Palabras clave para detección
-            live_keywords = ['exito', 'completado', 'aprobado', 'success', 'confirmación']
-            decline_keywords = ['Tu tarjeta ha sido rechazada', 'El número de tarjeta es incorrecto', 'Tu tarjeta venció; prueba con otra tarjeta.']
-            threeds_keywords = ['3d', 'secure', 'autenticacion', 'verificacion', 'cardinal']
 
-            
-            # 4. Buscar patrones en el contenido
-            # LIVE
-            for keyword in live_keywords:
-                if keyword in page_content_lower:
-                    final_status = 'live'
-                    evidence.append(f'✅ LIVE detectado: {keyword}')
-                    logger.info(f"LIVE detectado: {keyword}")
-                    break
-            
-            # DECLINE
-            if final_status == 'unknown':
-                for keyword in decline_keywords:
-                    if keyword in page_content_lower:
-                        final_status = 'decline'
-                        evidence.append(f'❌ DECLINE detectado: {keyword}')
-                        logger.info(f"DECLINE detectado: {keyword}")
-                        break
-            
-            # 3DS
-            if final_status == 'unknown':
-                for keyword in threeds_keywords:
-                    if keyword in page_content_lower:
-                        final_status = 'threeds'
-                        evidence.append(f'🛡️ 3DS detectado: {keyword}')
-                        logger.info(f"3DS detectado: {keyword}")
-                        break
-            
-            # 5. Si no se detectó nada, usar simulación
-            if final_status == 'unknown':
-                try:
-                    last_digit = int(card_last4[-1]) if card_last4[-1].isdigit() else 0
-                    if last_digit % 3 == 0:
-                        final_status = 'live'
-                        evidence.append('Simulación: Último dígito indica LIVE')
-                    elif last_digit % 3 == 1:
-                        final_status = 'decline'
-                        evidence.append('Simulación: Último dígito indica DECLINE')
-                    else:
-                        final_status = 'threeds'
-                        evidence.append('Simulación: Último dígito indica 3DS')
-                except:
-                    final_status = 'error'
-                    evidence.append('Error en simulación')
-            
-        except Exception as e:
-            logger.error(f"Error analizando resultado: {e}")
-            evidence.append(f'Error análisis: {str(e)}')
-            final_status = 'error'
-        
-        return {
-            'status': final_status,
-            'evidence': evidence,
-            'url': current_url,
-            'screenshot': screenshot_b64
-        }
 class EdupamChecker:
     def __init__(self, headless=True):
         self.base_url = EDUPAM_BASE_URL
