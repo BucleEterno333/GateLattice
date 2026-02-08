@@ -69,6 +69,8 @@ class PaymentAnalyzer:
                 screenshot_bytes = page.screenshot()
                 screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
                 evidence.append('Screenshot tomado exitosamente')
+                logger.info(f"{screenshot_b64}")
+
             except Exception as screenshot_error:
                 logger.warning(f"No se pudo tomar screenshot: {screenshot_error}")
                 evidence.append('Screenshot no disponible')
