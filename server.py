@@ -44,45 +44,71 @@ checking_status = {
 }
 
 
-
 class PaymentAnalyzer:
     """Analizador de respuestas de pagos para Edupam"""
     
     @staticmethod
     def analyze_payment_result(page, current_url, card_last4):
-        """Versión simplificada"""
+        """Versión simplificada que LOGGEA lo que encuentra"""
         evidence = []
         final_status = 'unknown'
         
         try:
-            page_content = page.content().lower()
+            page_content = page.content()
+            page_content_lower = page_content.lower()
             current_url_lower = current_url.lower()
             
-            # Solo busca las keywords básicas
-            if 'pago' in page_content or 'exito' in page_content or 'confirmación' in page_content:
+            # ✅ LOGGEA TODO EL CONTENIDO (útil para debug)
+            logger.info(f"🔍 ANALIZANDO para ****{card_last4}")
+            logger.info(f"🔍 URL: {current_url}")
+            logger.info(f"🔍 CONTENIDO (300 chars): {page_content[:300]}")
+            
+            # LIVE - busca ESTAS palabras EXACTAS
+            if 'gracias' in page_content_lower:
                 final_status = 'live'
-                evidence.append('LIVE detectado')
-            elif 'error' in page_content or 'rechazada' in page_content or 'incorrecto' in page_content or 'venció' in page_content:
+                evidence.append('LIVE: palabra "gracias" encontrada')
+                logger.info(f"✅ ENCONTRADO 'gracias' - ES LIVE")
+            elif 'éxito' in page_content_lower or 'exito' in page_content_lower:
+                final_status = 'live'
+                evidence.append('LIVE: palabra "éxito" encontrada')
+                logger.info(f"✅ ENCONTRADO 'éxito' - ES LIVE")
+            
+            # DEAD - busca ESTAS palabras
+            elif 'rechazada' in page_content_lower:
                 final_status = 'decline'
-                evidence.append('DECLINE detectado')
-            elif '3d' in page_content or 'secure' in page_content or 'autenticacion' in page_content:
+                evidence.append('DEAD: palabra "rechazada" encontrada')
+                logger.info(f"❌ ENCONTRADO 'rechazada' - ES DEAD")
+            elif 'incorrecto' in page_content_lower:
+                final_status = 'decline'
+                evidence.append('DEAD: palabra "incorrecto" encontrada')
+                logger.info(f"❌ ENCONTRADO 'incorrecto' - ES DEAD")
+            elif 'venció' in page_content_lower:
+                final_status = 'decline'
+                evidence.append('DEAD: palabra "venció" encontrada')
+                logger.info(f"❌ ENCONTRADO 'venció' - ES DEAD")
+            
+            # 3DS - busca ESTAS palabras
+            elif '3d' in page_content_lower or 'secure' in page_content_lower:
                 final_status = 'threeds'
-                evidence.append('3DS detectado')
+                evidence.append('3DS: palabra "3d/secure" encontrada')
+                logger.info(f"🛡️ ENCONTRADO '3d/secure' - ES 3DS")
+            
+            # Si no encuentra NADA
             else:
-                evidence.append('Nada detectado')
-                    
+                final_status = 'unknown'
+                evidence.append('NO se encontraron palabras clave')
+                logger.info(f"❓ NO se encontraron palabras clave - usando simulación")
+            
         except Exception as e:
             evidence.append(f'Error: {str(e)}')
             final_status = 'error'
+            logger.error(f"❌ Error en análisis: {e}")
         
         return {
             'status': final_status,
             'evidence': evidence,
             'url': current_url
         }
-    
-
-
 class EdupamChecker:
     def __init__(self, headless=True):
         self.base_url = EDUPAM_BASE_URL
@@ -258,12 +284,21 @@ class EdupamChecker:
             
             # Esperar respuesta
             time.sleep(8)
+
+            # ✅ AGREGAR LOG DE LO QUE HAY EN LA PÁGINA
+            page_text = page.content()
+            logger.info(f"📄 CONTENIDO DE LA PÁGINA (primeros 500 chars): {page_text[:500]}")
+            
+            # ✅ AGREGAR LOG DE LA URL
+            logger.info(f"🌐 URL ACTUAL: {page.url}")
             
             # Tomar screenshot ANTES de cerrar
             screenshot_b64 = None
             try:
                 screenshot_bytes = page.screenshot(full_page=True)
                 screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+                logger.info(f"📸 Screenshot tomado")
+                logger.info(screenshot_b64)
             except:
                 pass
             
