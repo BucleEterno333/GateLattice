@@ -41,11 +41,12 @@ RUN apt-get update && apt-get install -y \
     libxtst6 \
     lsb-release \
     xdg-utils \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Instalar Chrome
-RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
+# Instalar Chrome (método actualizado)
+RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
     && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
@@ -56,7 +57,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Instalar Playwright
 RUN pip install playwright==1.40.0
-RUN playwright install chromium
+RUN playwright install --with-deps chromium
 
 # Copiar aplicación
 COPY . .
