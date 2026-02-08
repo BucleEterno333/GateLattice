@@ -173,7 +173,6 @@ class PaymentAnalyzer:
 @app.route('/')
 def index():
     """Servir la página principal"""
-    return render_template('index.html')
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
