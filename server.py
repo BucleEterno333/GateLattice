@@ -76,9 +76,10 @@ class PaymentAnalyzer:
                 evidence.append('Screenshot no disponible')
             
             # 3. Palabras clave para detección
-            live_keywords = ['gracias', 'exito', 'completado', 'aprobado', 'success', 'confirmación']
-            decline_keywords = ['error', 'rechazado', 'declinado', 'fallo', 'insufficient', 'denied']
+            live_keywords = ['exito', 'completado', 'aprobado', 'success', 'confirmación']
+            decline_keywords = ['Tu tarjeta ha sido rechazada', 'El número de tarjeta es incorrecto']
             threeds_keywords = ['3d', 'secure', 'autenticacion', 'verificacion', 'cardinal']
+
             
             # 4. Buscar patrones en el contenido
             # LIVE
