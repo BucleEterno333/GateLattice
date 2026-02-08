@@ -1,0 +1,33 @@
+{
+  "name": "lattice-checker",
+  "type": "web",
+  "build": {
+    "type": "dockerfile",
+    "dockerfile": "Dockerfile"
+  },
+  "port": 8080,
+  "env": {
+    "FLASK_ENV": "production",
+    "SECRET_KEY": {
+      "type": "generated",
+      "value": "random"
+    },
+    "MAX_WORKERS": "5",
+    "API_TIMEOUT": "30",
+    "LOG_LEVEL": "INFO"
+  },
+  "resources": {
+    "cpu": "0.5",
+    "memory": "512Mi"
+  },
+  "autoscaling": {
+    "min": 1,
+    "max": 3,
+    "cpu_threshold": 80
+  },
+  "health": {
+    "path": "/api/status",
+    "interval": 30,
+    "timeout": 5
+  }
+}
