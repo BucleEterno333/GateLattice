@@ -77,7 +77,7 @@ class PaymentAnalyzer:
             
             # 3. Palabras clave para detección
             live_keywords = ['exito', 'completado', 'aprobado', 'success', 'confirmación']
-            decline_keywords = ['Tu tarjeta ha sido rechazada', 'El número de tarjeta es incorrecto']
+            decline_keywords = ['Tu tarjeta ha sido rechazada', 'El número de tarjeta es incorrecto', 'Tu tarjeta venció; prueba con otra tarjeta.']
             threeds_keywords = ['3d', 'secure', 'autenticacion', 'verificacion', 'cardinal']
 
             
