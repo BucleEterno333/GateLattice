@@ -47,91 +47,92 @@ checking_status = {
 
 class PaymentAnalyzer:
     """Analizador de respuestas de pagos para Edupam"""
-
+    
     @staticmethod
     def analyze_payment_result(page, current_url, card_last4):
-        
+        """
+        Analiza el resultado del pago basándose en múltiples métodos.
+        Ahora recibe el objeto 'page' completo, no solo el contenido.
+        """
         evidence = []
         final_status = 'unknown'
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        screenshot_b64 = None
         
         try:
-            # Tomar screenshot del resultado
-            screenshot_bytes = page.screenshot()
-            screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-            logger.info(f"Screenshot tomado antes de definir que es: {screenshot_b64}")
-      
-            # Obtener contenido de la página
+            # 1. PRIMERO obtener el contenido de la página
             page_content = page.content()
             page_content_lower = page_content.lower()
             current_url_lower = current_url.lower()
             
-            # Palabras clave simples para detección
-            live_keywords = ['gracias', 'éxito', 'exito', 'completado', 'aprobado', 'confirmación', 'success']
-            decline_keywords = ['error', 'rechazado', 'declinado', 'falló', 'fallo', 'intente nuevamente', 'insufficient']
-            threeds_keywords = ['3d', 'secure', 'autenticación', 'verificacion', 'cardinal', 'authentication']
+            # 2. LUEGO tomar screenshot (opcional, puedes comentarlo si da problemas)
+            try:
+                screenshot_bytes = page.screenshot()
+                screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+                evidence.append('Screenshot tomado exitosamente')
+            except Exception as screenshot_error:
+                logger.warning(f"No se pudo tomar screenshot: {screenshot_error}")
+                evidence.append('Screenshot no disponible')
             
-            # Verificar LIVE
+            # 3. Palabras clave para detección
+            live_keywords = ['gracias', 'exito', 'completado', 'aprobado', 'success', 'confirmación']
+            decline_keywords = ['error', 'rechazado', 'declinado', 'fallo', 'insufficient', 'denied']
+            threeds_keywords = ['3d', 'secure', 'autenticacion', 'verificacion', 'cardinal']
+            
+            # 4. Buscar patrones en el contenido
+            # LIVE
             for keyword in live_keywords:
                 if keyword in page_content_lower:
                     final_status = 'live'
-                    evidence.append(f'Keyword encontrada: {keyword}')
-                    # Tomar screenshot específico para LIVE
-                    screenshot_bytes = page.screenshot()
-                    screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-                    logger.info(f"Screenshot tomado para live: {screenshot_b64}")
+                    evidence.append(f'✅ LIVE detectado: {keyword}')
+                    logger.info(f"LIVE detectado: {keyword}")
                     break
             
-            # Si no es LIVE, verificar DECLINE
+            # DECLINE
             if final_status == 'unknown':
                 for keyword in decline_keywords:
                     if keyword in page_content_lower:
                         final_status = 'decline'
-                        evidence.append(f'Keyword encontrada: {keyword}')
-                        screenshot_bytes = page.screenshot()
-                        screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-                        logger.info(f"Screenshot tomado para live: {screenshot_b64}")
+                        evidence.append(f'❌ DECLINE detectado: {keyword}')
+                        logger.info(f"DECLINE detectado: {keyword}")
                         break
             
-            # Si no es DECLINE, verificar 3DS
+            # 3DS
             if final_status == 'unknown':
                 for keyword in threeds_keywords:
                     if keyword in page_content_lower:
                         final_status = 'threeds'
-                        evidence.append(f'Keyword encontrada: {keyword}')
-                        screenshot_bytes = page.screenshot()
-                        screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-                        logger.info(f"Screenshot tomado para live: {screenshot_b64}")
+                        evidence.append(f'🛡️ 3DS detectado: {keyword}')
+                        logger.info(f"3DS detectado: {keyword}")
                         break
             
-            # Si no se detecta nada, usar simulación basada en último dígito
+            # 5. Si no se detectó nada, usar simulación
             if final_status == 'unknown':
-                last_digit = int(card_last4[-1]) if card_last4[-1].isdigit() else 0
-                
-                if last_digit % 3 == 0:
-                    final_status = 'live'
-                    evidence.append('Simulación: Tarjeta aprobada (último dígito)')
-                    page.screenshot(path=f"/tmp/{timestamp}_SIM_LIVE_{card_last4}.png")
-                elif last_digit % 3 == 1:
-                    final_status = 'decline'
-                    evidence.append('Simulación: Tarjeta declinada (último dígito)')
-                    page.screenshot(path=f"/tmp/{timestamp}_SIM_DECLINE_{card_last4}.png")
-                else:
-                    final_status = 'threeds'
-                    evidence.append('Simulación: 3D Secure requerido (último dígito)')
-                    page.screenshot(path=f"/tmp/{timestamp}_SIM_3DS_{card_last4}.png")
+                try:
+                    last_digit = int(card_last4[-1]) if card_last4[-1].isdigit() else 0
+                    if last_digit % 3 == 0:
+                        final_status = 'live'
+                        evidence.append('Simulación: Último dígito indica LIVE')
+                    elif last_digit % 3 == 1:
+                        final_status = 'decline'
+                        evidence.append('Simulación: Último dígito indica DECLINE')
+                    else:
+                        final_status = 'threeds'
+                        evidence.append('Simulación: Último dígito indica 3DS')
+                except:
+                    final_status = 'error'
+                    evidence.append('Error en simulación')
             
         except Exception as e:
             logger.error(f"Error analizando resultado: {e}")
             evidence.append(f'Error análisis: {str(e)}')
+            final_status = 'error'
         
         return {
             'status': final_status,
             'evidence': evidence,
             'url': current_url,
-            'screenshot_taken': True
+            'screenshot': screenshot_b64
         }
-
 class EdupamChecker:
     def __init__(self, headless=True):
         self.base_url = EDUPAM_BASE_URL
@@ -317,7 +318,7 @@ class EdupamChecker:
             page_content = page.content()
             
             analysis = self.analyzer.analyze_payment_result(
-                current_url, card_info['numero'][-4:]
+                page, current_url, card_info['numero'][-4:]
             )
             
             # Determinar estado final
