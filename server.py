@@ -62,24 +62,14 @@ class PaymentAnalyzer:
             if 'pago' in page_content or 'exito' in page_content or 'confirmación' in page_content:
                 final_status = 'live'
                 evidence.append('LIVE detectado')
-            elif 'tarjeta' in page_content or 'rechazada' in page_content or 'incorrecto' in page_content or 'venció' in page_content:
+            elif 'error' in page_content or 'rechazada' in page_content or 'incorrecto' in page_content or 'venció' in page_content:
                 final_status = 'decline'
                 evidence.append('DECLINE detectado')
             elif '3d' in page_content or 'secure' in page_content or 'autenticacion' in page_content:
                 final_status = 'threeds'
                 evidence.append('3DS detectado')
             else:
-                # Si no detecta, simular
-                last_digit = int(card_last4[-1]) if card_last4[-1].isdigit() else 0
-                if last_digit % 3 == 0:
-                    final_status = 'live'
-                    evidence.append('Simulación: LIVE')
-                elif last_digit % 3 == 1:
-                    final_status = 'decline'
-                    evidence.append('Simulación: DECLINE')
-                else:
-                    final_status = 'threeds'
-                    evidence.append('Simulación: 3DS')
+                evidence.append('Nada detectado')
                     
         except Exception as e:
             evidence.append(f'Error: {str(e)}')
