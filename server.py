@@ -105,6 +105,88 @@ class EdupamChecker:
         }
         self.analyzer = PaymentAnalyzer()
     
+    def parse_card_data(self, card_string):
+        """Parsear string de tarjeta en formato: NUMERO|MES|AÑO|CVV"""
+        try:
+            parts = card_string.strip().split('|')
+            if len(parts) != 4:
+                raise ValueError("Formato inválido")
+            
+            return {
+                'numero': parts[0].strip().replace(' ', ''),
+                'mes': parts[1].strip().zfill(2),
+                'ano': parts[2].strip()[-2:],
+                'cvv': parts[3].strip()
+            }
+        except Exception as e:
+            logger.error(f"Error parseando tarjeta: {e}")
+            return None
+    
+    def fill_form(self, page, amount):
+        """Llenar formulario básico de donación"""
+        try:
+            # Nombre
+            page.fill('#name', self.donor_data['nombre'])
+            time.sleep(0.3)
+            
+            # Apellido
+            page.fill('#lastname', self.donor_data['apellido'])
+            time.sleep(0.3)
+            
+            # Email
+            page.fill('#email', self.donor_data['email'])
+            time.sleep(0.3)
+            
+            # Fecha de nacimiento
+            page.fill('#birthdate', self.donor_data['fecha_nacimiento'])
+            time.sleep(0.3)
+            
+            # Monto
+            page.fill('#quantity', str(amount))
+            time.sleep(0.5)
+            
+            # Tipo de donativo (one-time por defecto)
+            page.locator('#do-type').click()
+            time.sleep(1)
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error llenando formulario: {e}")
+            return False
+    
+    def fill_card_simple(self, page, card_info):
+        """Llenar datos de tarjeta usando método TAB"""
+        try:
+            # Hacer clic en el campo de monto para asegurar focus
+            page.locator('#quantity').click()
+            time.sleep(0.5)
+            
+            # Presionar TAB para ir al primer campo de tarjeta
+            page.keyboard.press('Tab')
+            time.sleep(1)
+            
+            # Escribir número de tarjeta
+            page.keyboard.press('Control+A')
+            page.keyboard.press('Backspace')
+            time.sleep(0.2)
+            
+            page.keyboard.type(card_info['numero'], delay=50)
+            time.sleep(1.5)
+            
+            # Esperar TAB automático y escribir fecha
+            fecha = card_info['mes'] + card_info['ano']
+            page.keyboard.type(fecha, delay=50)
+            time.sleep(1.5)
+            
+            # Esperar TAB automático y escribir CVC
+            page.keyboard.type(card_info['cvv'], delay=50)
+            time.sleep(1)
+            
+            return True
+        except Exception as e:
+            logger.error(f"Error llenando tarjeta: {e}")
+            return False
+
     def check_single_card(self, card_string, amount=50):
         """Verificar una sola tarjeta"""
         logger.info(f"Verificando tarjeta: ****{card_string.split('|')[0][-4:]}")
