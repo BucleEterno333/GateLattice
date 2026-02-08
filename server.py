@@ -172,7 +172,19 @@ class PaymentAnalyzer:
 
 @app.route('/')
 def index():
-    """Servir la página principal"""
+    """Endpoint raíz del backend"""
+    # Asegúrate que esta línea esté y tenga RETURN
+    return jsonify({
+        "status": "online",
+        "service": "Lattice Checker API",
+        "version": "2.0",
+        "endpoints": {
+            "status": "/api/status",
+            "check_cards": "/api/check (POST)",
+            "results": "/api/results",
+            "cancel": "/api/cancel (POST)"
+        }
+    })
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
