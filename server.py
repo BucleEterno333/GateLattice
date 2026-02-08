@@ -350,7 +350,7 @@ class EdupamCheckerPersistent:
                     btn.click()
                 
                 # Esperar respuesta
-                self.page.wait_for_load_state('networkidle', timeout=10000)
+                self.page.wait_for_load_state('networkidle', timeout=60000)
                 time.sleep(2)
                 
                 return True
@@ -412,7 +412,7 @@ class EdupamCheckerPersistent:
                     continue
             
             # Intentar recargar la página si hay 3D
-            self.page.reload(wait_until='networkidle', timeout=10000)
+            self.page.reload(wait_until='networkidle', timeout=60000)
             time.sleep(2)
             
             # Verificar si aún hay formulario
