@@ -148,10 +148,6 @@ class EdupamChecker:
             page.fill('#quantity', str(amount))
             time.sleep(0.5)
             
-            # Tipo de donativo (one-time por defecto)
-            page.locator('#do-type').click()
-            time.sleep(1)
-            
             return True
         except Exception as e:
             logger.error(f"Error llenando formulario: {e}")
