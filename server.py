@@ -297,9 +297,33 @@ class EdupamChecker:
             # Tomar screenshot ÚNICO para esta tarjeta
             screenshot_b64 = None
             try:
+                page.evaluate("""
+                    () => {
+                        return new Promise((resolve) => {
+                            let totalHeight = 0;
+                            const distance = 100;
+                            const scrollHeight = document.body.scrollHeight;
+                            
+                            const timer = setInterval(() => {
+                                window.scrollBy(0, distance);
+                                totalHeight += distance;
+                                
+                                if(totalHeight >= scrollHeight) {
+                                    clearInterval(timer);
+                                    // Volver al inicio
+                                    window.scrollTo(0, 0);
+                                    resolve();
+                                }
+                            }, 50);
+                        });
+                    }
+                """)
+
+
                 screenshot_bytes = page.screenshot(full_page=True)
                 screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
                 logger.info(f"13. 📸 Screenshot ÚNICO tomado para ****{card_last4}")
+                logger.info(f"14. {screenshot_bytes}")
             except Exception as e:
                 logger.error(f"Error screenshot: {e}")
             
