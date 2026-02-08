@@ -235,7 +235,7 @@ class EdupamCheckerPersistent:
             response = self.page.goto(
                 f"{self.base_url}{self.endpoint}",
                 wait_until='networkidle',
-                timeout=30000
+                timeout=60000
             )
             
             if response and response.status != 200:
