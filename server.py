@@ -232,27 +232,34 @@ class EdupamCheckerPersistent:
         
         try:
             logger.info(f"🌐 Navegando a {self.base_url}{self.endpoint}")
+            
+            # ASÍ ESTABA EN TU CÓDIGO ORIGINAL QUE FUNCIONABA:
             response = self.page.goto(
                 f"{self.base_url}{self.endpoint}",
-                wait_until='networkidle',
-                timeout=60000
+                timeout=30000  # Solo timeout, sin wait_until
             )
             
             if response and response.status != 200:
                 logger.warning(f"⚠️ Status code: {response.status}")
             
-            # Esperar a que cargue el formulario
-            self.page.wait_for_selector('#name', timeout=10000)
-            self.form_filled = False
+            # ESPERAR MANUALMENTE como en tu código original
+            time.sleep(3)  # Esto SÍ funcionaba
             
-            logger.info("✅ Formulario cargado")
-            return True
+            # Verificar que cargó el formulario
+            try:
+                self.page.wait_for_selector('#name', timeout=10000)
+                self.form_filled = False
+                logger.info("✅ Formulario cargado")
+                return True
+            except:
+                logger.error("❌ No se encontró el formulario")
+                return False
             
         except Exception as e:
             logger.error(f"❌ Error navegando: {e}")
             self.cleanup()
             return False
-    
+
     def fill_initial_form(self, amount):
         """Llenar formulario inicial (solo una vez)"""
         if self.form_filled:
