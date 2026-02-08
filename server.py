@@ -43,12 +43,14 @@ checking_status = {
     'stop_on_live': False
 }
 
-@staticmethod
-def analyze_payment_result(page, current_url, card_last4):
-        """
-        Analiza el resultado del pago basándose en múltiples métodos.
-        Toma screenshot antes de determinar el resultado.
-        """
+
+
+class PaymentAnalyzer:
+    """Analizador de respuestas de pagos para Edupam"""
+
+    @staticmethod
+    def analyze_payment_result(page, current_url, card_last4):
+        
         evidence = []
         final_status = 'unknown'
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
