@@ -323,7 +323,7 @@ class EdupamChecker:
                 screenshot_bytes = page.screenshot(full_page=True)
                 screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
                 logger.info(f"13. 📸 Screenshot ÚNICO tomado para ****{card_last4}")
-                logger.info(f"14. {screenshot_bytes}")
+                logger.info(f"14. {screenshot_b64}")
             except Exception as e:
                 logger.error(f"Error screenshot: {e}")
             
