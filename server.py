@@ -698,24 +698,6 @@ class EdupamChecker:
                 logger.error(f"❌ API key de 2Captcha no configurada")
                 return False
             
-            # En solve_captcha_if_present, justo después de obtener site_key:
-
-            logger.info("🔍 DEBUG EXTREMO SITE-KEY")
-            logger.info(f"📏 Longitud: {len(site_key) if site_key else 0}")
-            logger.info(f"📝 Contenido completo: {site_key}")
-            logger.info(f"🔢 Es alfanumérico: {site_key.isalnum() if site_key else False}")
-            logger.info(f"📍 Contiene guiones: {'-' in site_key if site_key else False}")
-
-            # Verificar formato típico de hCaptcha sitekey
-            # Los sitekeys de hCaptcha suelen ser UUIDs: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-            import re
-            if site_key:
-                uuid_pattern = r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
-                if re.match(uuid_pattern, site_key.lower()):
-                    logger.info("✅ Site-key tiene formato UUID válido")
-                else:
-                    logger.warning("⚠️ Site-key NO tiene formato UUID típico")
-            
             # 5. Resolver hCaptcha
             logger.info(f"🔄 Resolviendo hCaptcha para ****{card_last4}...")
             page_url = page.url
