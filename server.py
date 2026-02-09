@@ -309,41 +309,66 @@ class EdupamChecker:
             site_key = None
             captcha_detected = False
             
-            # Buscar site-key de hCaptcha
-            try:
-                # hCaptcha usa data-sitekey igual que reCAPTCHA
-                site_key = page.evaluate("""
-                    () => {
-                        // Buscar hCaptcha
-                        const hcaptchaElement = document.querySelector('[data-sitekey]');
-                        if (hcaptchaElement && 
-                            (hcaptchaElement.classList.contains('h-captcha') || 
-                            hcaptchaElement.id === 'hcaptcha-container' ||
-                            window.hcaptcha)) {
-                            return hcaptchaElement.getAttribute('data-sitekey');
-                        }
+            # Extraer site-key CORRECTAMENTE del iframe hcaptcha
+            for frame in page.frames:
+                try:
+                    frame_url = frame.url
+                    if 'hcaptcha' in frame_url.lower():
+                        logger.info(f"🔍 Analizando iframe hCaptcha: {frame_url[:80]}...")
                         
-                        // Buscar en iframes de hcaptcha
-                        const iframes = document.querySelectorAll('iframe');
-                        for (let iframe of iframes) {
-                            const src = iframe.src || '';
-                            if (src.includes('hcaptcha.com')) {
-                                // Extraer sitekey de parámetros
-                                const match = src.match(/[?&]sitekey=([^&]+)/);
-                                if (match) return match[1];
+                        # Extraer sitekey de parámetros de URL - FORMA CORRECTA
+                        import urllib.parse
+                        parsed = urllib.parse.urlparse(frame_url)
+                        params = urllib.parse.parse_qs(parsed.query)
+                        
+                        # hCaptcha puede usar 'sitekey' o 'host'
+                        if 'sitekey' in params:
+                            site_key = params['sitekey'][0]
+                            logger.info(f"✅ Site-key extraído de parámetro 'sitekey': {site_key[:30]}...")
+                            break
+                        elif 'host' in params:
+                            # A veces el sitekey está en el host parameter
+                            site_key = params['host'][0]
+                            logger.info(f"✅ Site-key extraído de parámetro 'host': {site_key[:30]}...")
+                            break
+                        else:
+                            # Intentar extraer de otras formas
+                            logger.info(f"📊 Parámetros del iframe: {list(params.keys())}")
+                            
+                except Exception as e:
+                    logger.debug(f"⚠️ Error analizando iframe: {e}")
+
+            # Después del código anterior, si aún no tenemos site_key:
+            if not site_key:
+                try:
+                    # Intentar obtener del elemento h-captcha en la página
+                    site_key = page.evaluate("""
+                        () => {
+                            // Buscar elemento h-captcha
+                            const hcaptchaEl = document.querySelector('.h-captcha, [data-sitekey]');
+                            if (hcaptchaEl && hcaptchaEl.getAttribute('data-sitekey')) {
+                                return hcaptchaEl.getAttribute('data-sitekey');
                             }
+                            
+                            // Buscar scripts que contengan hcaptcha
+                            const scripts = document.querySelectorAll('script');
+                            for (let script of scripts) {
+                                const content = script.textContent || script.src || '';
+                                if (content.includes('hcaptcha')) {
+                                    // Buscar sitekey en el script
+                                    const match = content.match(/sitekey[\\s:='"]+([^'",\\s>]+)/i);
+                                    if (match) return match[1];
+                                }
+                            }
+                            
+                            return null;
                         }
-                        
-                        return null;
-                    }
-                """)
-                
-                if site_key:
-                    logger.info(f"✅ Site-key hCaptcha encontrado: {site_key[:30]}...")
-                    captcha_detected = True
+                    """)
                     
-            except Exception as e:
-                logger.warning(f"⚠️ Error buscando hCaptcha con JS: {e}")
+                    if site_key:
+                        logger.info(f"✅ Site-key obtenido del DOM: {site_key[:30]}...")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error obteniendo site-key del DOM: {e}")
             
             # 2. Si no se encontró, buscar por texto o elementos
             if not captcha_detected:
