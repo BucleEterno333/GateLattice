@@ -10,7 +10,7 @@ import requests
 import logging
 from datetime import datetime
 import base64 
-import twocaptcha
+from twocaptcha import TwoCaptcha
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
