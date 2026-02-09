@@ -418,7 +418,7 @@ class EdupamChecker:
             # 5. Resolver hCaptcha
             logger.info(f"🔄 Resolviendo hCaptcha para ****{card_last4}...")
             page_url = page.url
-            solution = self.solve_hcaptcha(site_key, page_url)  # Necesitas este método
+            solution = self.captcha_solver.solve_hcaptcha(site_key, page_url)  # ← BIEN
             
             if not solution:
                 logger.error(f"❌ No se pudo resolver el hCaptcha")
