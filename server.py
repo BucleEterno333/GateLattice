@@ -309,160 +309,213 @@ class EdupamChecker:
             return False
     
 
+
+
+
+
+
+
+
     def solve_captcha_if_present(self, page, card_last4):
         """Detectar y resolver captcha si está presente"""
         try:
-            # Esperar un momento para que cargue el captcha si existe
             time.sleep(3)
             
-            # Verificar contenido de la página para detectar captcha
-            page_content = page.content()
-            page_content_lower = page_content.lower()
+            # 1. Buscar TODOS los iframes en la página
+            iframes = page.frames
+            logger.info(f"🔍 Analizando {len(iframes)} iframes para captcha...")
             
-            # Buscar indicadores de captcha en el contenido
-            captcha_indicators = [
-                'one more step before you\'re done',
-                'i am human',
-                'soy humano',
-                'recaptcha',
-                'g-recaptcha',
-                'not a robot'
-            ]
+            site_key = None
+            captcha_detected = False
             
-            has_captcha = any(indicator in page_content_lower for indicator in captcha_indicators)
+            # 2. Buscar en cada iframe
+            for i, frame in enumerate(iframes):
+                try:
+                    # Obtener URL del iframe
+                    iframe_url = frame.url
+                    
+                    # Verificar si es un iframe de recaptcha
+                    if 'google.com/recaptcha' in iframe_url:
+                        logger.info(f"✅ Iframe {i} es de reCAPTCHA: {iframe_url[:50]}...")
+                        captcha_detected = True
+                        
+                        # Extraer site-key de la URL del iframe
+                        match = re.search(r'[?&]k=([^&]+)', iframe_url)
+                        if match:
+                            site_key = match.group(1)
+                            logger.info(f"✅ Site-key encontrado en iframe: {site_key[:30]}...")
+                            break
+                        
+                        # También buscar en el contenido del iframe
+                        try:
+                            # Evaluar dentro del iframe
+                            site_key_in_frame = frame.evaluate("""
+                                () => {
+                                    // Buscar data-sitekey dentro del iframe
+                                    const sitekeyEl = document.querySelector('[data-sitekey]');
+                                    if (sitekeyEl) {
+                                        return sitekeyEl.getAttribute('data-sitekey');
+                                    }
+                                    return null;
+                                }
+                            """)
+                            
+                            if site_key_in_frame:
+                                site_key = site_key_in_frame
+                                logger.info(f"✅ Site-key encontrado en contenido del iframe: {site_key[:30]}...")
+                                break
+                        except:
+                            continue
+                
+                except Exception as e:
+                    logger.debug(f"⚠️ Error analizando iframe {i}: {e}")
+                    continue
             
-            if not has_captcha:
+            # 3. Si no se encontró en iframes, buscar en el documento principal
+            if not site_key:
+                try:
+                    # Buscar site-key en elementos del documento principal
+                    selectors = [
+                        'div[data-sitekey]',
+                        '.g-recaptcha[data-sitekey]',
+                        'iframe[src*="recaptcha"][data-sitekey]'
+                    ]
+                    
+                    for selector in selectors:
+                        try:
+                            if page.locator(selector).count() > 0:
+                                site_key = page.locator(selector).first.get_attribute('data-sitekey')
+                                if site_key:
+                                    logger.info(f"✅ Site-key encontrado en elemento principal: {site_key[:30]}...")
+                                    captcha_detected = True
+                                    break
+                        except:
+                            continue
+                except Exception as e:
+                    logger.warning(f"⚠️ Error buscando en documento principal: {e}")
+            
+            # 4. Si no hay captcha detectado
+            if not captcha_detected:
                 logger.info(f"✅ No se detectó captcha para ****{card_last4}")
                 return True
             
-            logger.info(f"🛡️ Captcha detectado en página para ****{card_last4}")
-            
-            # Buscar site-key
-            site_key = None
-            
-            # Buscar en atributos data-sitekey
-            try:
-                site_key = page.evaluate("""
-                    () => {
-                        // Buscar data-sitekey
-                        const elements = document.querySelectorAll('[data-sitekey]');
-                        if (elements.length > 0) {
-                            return elements[0].getAttribute('data-sitekey');
-                        }
-                        
-                        // Buscar en iframes de recaptcha
-                        const iframes = document.querySelectorAll('iframe[src*="google.com/recaptcha"]');
-                        for (let iframe of iframes) {
-                            const src = iframe.getAttribute('src');
-                            const match = src.match(/[?&]k=([^&]+)/);
-                            if (match) return match[1];
-                        }
-                        
-                        return null;
-                    }
-                """)
-            except Exception as e:
-                logger.warning(f"⚠️ Error buscando site-key con JS: {e}")
-            
-            # Si no se encontró con JS, intentar con selectores
+            # 5. Si hay captcha pero no site-key
             if not site_key:
-                selectors_to_check = [
-                    'div[data-sitekey]',
-                    '.g-recaptcha[data-sitekey]',
-                    'iframe[src*="google.com/recaptcha"]'
-                ]
-                
-                for selector in selectors_to_check:
+                logger.error(f"❌ Captcha detectado pero no se pudo obtener site-key para ****{card_last4}")
+                # Intentar extraer de cualquier iframe que contenga 'recaptcha' en la URL
+                for frame in iframes:
                     try:
-                        if page.locator(selector).count() > 0:
-                            if 'data-sitekey' in selector:
-                                site_key = page.locator(selector).first.get_attribute('data-sitekey')
-                            elif 'iframe' in selector:
-                                iframe_src = page.locator(selector).first.get_attribute('src')
-                                if iframe_src:
-                                    match = re.search(r'k=([^&]+)', iframe_src)
-                                    if match:
-                                        site_key = match.group(1)
-                            break
+                        iframe_url = frame.url
+                        if 'recaptcha' in iframe_url.lower():
+                            # Extraer k=xxxx de la URL
+                            import urllib.parse
+                            parsed = urllib.parse.urlparse(iframe_url)
+                            params = urllib.parse.parse_qs(parsed.query)
+                            if 'k' in params:
+                                site_key = params['k'][0]
+                                logger.info(f"✅ Site-key extraído de parámetros URL: {site_key[:30]}...")
+                                break
                     except:
                         continue
             
             if not site_key:
-                logger.error(f"❌ Captcha detectado pero no se pudo obtener site-key para ****{card_last4}")
+                logger.error(f"❌ No se pudo obtener site-key después de todos los intentos")
                 return False
             
             if not self.captcha_solver:
-                logger.error(f"❌ API key de 2Captcha no configurada para ****{card_last4}")
+                logger.error(f"❌ API key de 2Captcha no configurada")
                 return False
             
-            logger.info(f"✅ Site-key encontrado: {site_key[:30]}...")
-            
-            # Resolver captcha
+            # 6. Resolver captcha
+            logger.info(f"🔄 Resolviendo captcha para ****{card_last4}...")
             page_url = page.url
             solution = self.captcha_solver.solve_recaptcha_v2(site_key, page_url)
             
             if not solution:
-                logger.error(f"❌ No se pudo resolver el captcha para ****{card_last4}")
+                logger.error(f"❌ No se pudo resolver el captcha")
                 return False
             
-            logger.info(f"✅ Captcha resuelto para ****{card_last4}")
+            logger.info(f"✅ Captcha resuelto, solución obtenida")
             
-            # Inyectar la solución en la página
+            # 7. Inyectar solución
             try:
-                # Método 1: Inyectar directamente
-                page.evaluate(f"""
-                    (solution) => {{
-                        // Buscar el campo g-recaptcha-response
-                        let responseField = document.getElementById('g-recaptcha-response');
-                        if (!responseField) {{
-                            responseField = document.querySelector('[name="g-recaptcha-response"]');
-                        }}
+                # Método más robusto: usar evaluate con parámetros
+                page.evaluate("""
+                    (solution) => {
+                        console.log('🎯 Intentando inyectar solución de captcha...');
                         
-                        if (responseField) {{
-                            responseField.value = solution;
-                            console.log('✅ Captcha solution injected into existing field');
-                        }} else {{
-                            // Crear campo si no existe
-                            responseField = document.createElement('textarea');
-                            responseField.id = 'g-recaptcha-response';
-                            responseField.name = 'g-recaptcha-response';
-                            responseField.style.display = 'none';
-                            responseField.value = solution;
-                            document.body.appendChild(responseField);
-                            console.log('✅ Captcha solution field created and injected');
-                        }}
+                        // 1. Buscar campo existente
+                        let field = document.getElementById('g-recaptcha-response');
+                        if (!field) {
+                            field = document.querySelector('[name="g-recaptcha-response"]');
+                        }
                         
-                        // Disparar eventos de cambio
-                        const event = new Event('change', {{ bubbles: true }});
-                        responseField.dispatchEvent(event);
+                        // 2. Si no existe, crearlo
+                        if (!field) {
+                            field = document.createElement('textarea');
+                            field.id = 'g-recaptcha-response';
+                            field.name = 'g-recaptcha-response';
+                            field.style.display = 'none';
+                            document.body.appendChild(field);
+                            console.log('✅ Campo creado');
+                        }
                         
-                        // También disparar input event para algunos formularios
-                        const inputEvent = new Event('input', {{ bubbles: true }});
-                        responseField.dispatchEvent(inputEvent);
+                        // 3. Asignar valor
+                        field.value = solution;
+                        console.log('✅ Valor asignado');
+                        
+                        // 4. Disparar eventos
+                        const events = ['change', 'input', 'blur'];
+                        events.forEach(eventType => {
+                            const event = new Event(eventType, { bubbles: true });
+                            field.dispatchEvent(event);
+                        });
+                        
+                        console.log('✅ Eventos disparados');
+                        
+                        // 5. También intentar en iframes
+                        const frames = document.querySelectorAll('iframe');
+                        frames.forEach(frame => {
+                            try {
+                                const frameDoc = frame.contentDocument || frame.contentWindow.document;
+                                const frameField = frameDoc.getElementById('g-recaptcha-response') || 
+                                                frameDoc.querySelector('[name="g-recaptcha-response"]');
+                                if (frameField) {
+                                    frameField.value = solution;
+                                    console.log('✅ También inyectado en iframe');
+                                }
+                            } catch(e) {
+                                // Ignorar errores de cross-origin
+                            }
+                        });
                         
                         return true;
-                    }}
+                    }
                 """, solution)
                 
-                # Pequeña espera para que se procese
                 time.sleep(2)
                 
-                # Re-enviar el formulario
+                # 8. Re-enviar formulario
                 btn = page.locator('#btn-donation')
                 if btn.count() > 0:
+                    logger.info(f"✅ Re-enviando formulario...")
                     btn.click()
-                    logger.info(f"✅ Re-enviando formulario con captcha resuelto para ****{card_last4}")
-                    time.sleep(5)  # Esperar más después del re-envío
+                    time.sleep(5)
                 
                 return True
                 
             except Exception as e:
-                logger.error(f"❌ Error inyectando solución de captcha para ****{card_last4}: {e}")
+                logger.error(f"❌ Error inyectando solución: {e}")
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ Error en solve_captcha_if_present para ****{card_last4}: {e}")
+            logger.error(f"❌ Error general en solve_captcha_if_present: {e}")
             return False
+
+
+
+
+
 
 
     
