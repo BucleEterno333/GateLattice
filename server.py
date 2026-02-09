@@ -10,7 +10,7 @@ import requests
 import logging
 from datetime import datetime
 import base64 
-import TwoCaptcha
+from twocaptcha import TwoCaptcha
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -54,7 +54,7 @@ class CaptchaSolver:
         if api_key:
             try:
                 # Inicializar solver oficial
-                self.solver = twocaptcha.TwoCaptcha(api_key)
+                self.solver = TwoCaptcha(api_key)
                 logger.info("✅ Solver 2Captcha inicializado con librería oficial")
             except Exception as e:
                 logger.error(f"❌ Error inicializando 2Captcha: {e}")
@@ -426,7 +426,6 @@ class EdupamChecker:
             if not self.captcha_solved:
                 logger.error(f"❌ API key de 2Captcha no configurada para ****{card_last4}")
                 return False
-                
             
             # Resolver captcha
             logger.info(f"🔄 Resolviendo captcha para ****{card_last4}...")
