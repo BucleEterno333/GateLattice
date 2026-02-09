@@ -46,90 +46,96 @@ checking_status = {
 
 
 
-def solve_hcaptcha(self, site_key, page_url):
-    """Resolver hCaptcha usando API v2 de 2Captcha"""
-    try:
-        if not self.api_key:
-            logger.warning("⚠️ Sin API key")
-            return None
-        
-        logger.info(f"🔄 Enviando hCaptcha API v2 - sitekey: {site_key[:30]}...")
-        logger.info(f"🌐 URL: {page_url}")
-        
-        # API v2 - HCAPTCHA
-        data = {
-            "clientKey": self.api_key,
-            "task": {
-                "type": "HCaptchaTaskProxyless",
-                "websiteURL": page_url,
-                "websiteKey": site_key,
-                "isInvisible": True  # ← ¡IMPORTANTE! Es invisible
-            }
-        }
-        
-        response = requests.post(
-            "https://api.2captcha.com/createTask",
-            json=data,
-            timeout=30,
-            headers={"Content-Type": "application/json"}
-        )
-        
-        result = response.json()
-        logger.info(f"📥 Respuesta createTask: {result}")
-        
-        if result.get("errorId", 1) != 0:
-            error = result.get("errorDescription", "Error desconocido")
-            logger.error(f"❌ Error API v2: {error}")
-            return None
-        
-        task_id = result["taskId"]
-        logger.info(f"✅ Tarea creada: {task_id}")
-        
-        # Esperar solución
-        for i in range(25):  # 100 segundos máximo
-            time.sleep(4)
+
+class CaptchaSolver:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        self.base_url = "https://2captcha.com"
+    
+    def solve_hcaptcha(self, site_key, page_url):
+        """Resolver hCaptcha usando API v2 de 2Captcha"""
+        try:
+            if not self.api_key:
+                logger.warning("⚠️ Sin API key")
+                return None
             
-            params = {
+            logger.info(f"🔄 Enviando hCaptcha API v2 - sitekey: {site_key[:30]}...")
+            logger.info(f"🌐 URL: {page_url}")
+            
+            # API v2 - HCAPTCHA
+            data = {
                 "clientKey": self.api_key,
-                "taskId": task_id
+                "task": {
+                    "type": "HCaptchaTaskProxyless",
+                    "websiteURL": page_url,
+                    "websiteKey": site_key,
+                    "isInvisible": True  # ← ¡IMPORTANTE! Es invisible
+                }
             }
             
-            resp = requests.post(
-                "https://api.2captcha.com/getTaskResult",
-                json=params,
-                timeout=30
+            response = requests.post(
+                "https://api.2captcha.com/createTask",
+                json=data,
+                timeout=30,
+                headers={"Content-Type": "application/json"}
             )
             
-            status_result = resp.json()
-            status = status_result.get("status")
+            result = response.json()
+            logger.info(f"📥 Respuesta createTask: {result}")
             
-            logger.info(f"⏳ Intento {i+1}/25 - Estado: {status}")
+            if result.get("errorId", 1) != 0:
+                error = result.get("errorDescription", "Error desconocido")
+                logger.error(f"❌ Error API v2: {error}")
+                return None
             
-            if status == "ready":
-                solution = status_result.get("solution", {}).get("gRecaptchaResponse")
-                if solution:
-                    logger.info(f"✅ hCaptcha resuelto en {(i+1)*4}s")
-                    logger.info(f"📦 Token: {solution[:50]}...")
-                    return solution
+            task_id = result["taskId"]
+            logger.info(f"✅ Tarea creada: {task_id}")
+            
+            # Esperar solución
+            for i in range(25):  # 100 segundos máximo
+                time.sleep(4)
+                
+                params = {
+                    "clientKey": self.api_key,
+                    "taskId": task_id
+                }
+                
+                resp = requests.post(
+                    "https://api.2captcha.com/getTaskResult",
+                    json=params,
+                    timeout=30
+                )
+                
+                status_result = resp.json()
+                status = status_result.get("status")
+                
+                logger.info(f"⏳ Intento {i+1}/25 - Estado: {status}")
+                
+                if status == "ready":
+                    solution = status_result.get("solution", {}).get("gRecaptchaResponse")
+                    if solution:
+                        logger.info(f"✅ hCaptcha resuelto en {(i+1)*4}s")
+                        logger.info(f"📦 Token: {solution[:50]}...")
+                        return solution
+                    else:
+                        logger.error("❌ No hay gRecaptchaResponse en solución")
+                        return None
+                
+                elif status == "processing":
+                    continue
+                
                 else:
-                    logger.error("❌ No hay gRecaptchaResponse en solución")
+                    error = status_result.get("errorDescription", "Error")
+                    logger.error(f"❌ Error en estado: {error}")
                     return None
             
-            elif status == "processing":
-                continue
+            logger.error("❌ Tiempo agotado (100s)")
+            return None
             
-            else:
-                error = status_result.get("errorDescription", "Error")
-                logger.error(f"❌ Error en estado: {error}")
-                return None
+        except Exception as e:
+            logger.error(f"❌ Error API v2 hCaptcha: {e}")
+            return None
         
-        logger.error("❌ Tiempo agotado (100s)")
-        return None
-        
-    except Exception as e:
-        logger.error(f"❌ Error API v2 hCaptcha: {e}")
-        return None
-
 
 class PaymentAnalyzer:
     """Analizador de respuestas de pagos para Edupam"""
