@@ -50,72 +50,128 @@ checking_status = {
 class CaptchaSolver:
     def __init__(self, api_key):
         self.api_key = api_key
-        self.base_url = "https://2captcha.com"
     
     def solve_hcaptcha(self, site_key, page_url):
-        """Resolver hCaptcha usando API v2 de 2Captcha"""
-        try:
-            if not self.api_key:
-                logger.warning("⚠️ Sin API key")
-                return None
-            
-            logger.info(f"🔄 Enviando hCaptcha API v2 - sitekey: {site_key[:30]}...")
-            logger.info(f"🌐 URL: {page_url}")
-            
-            # API v2 - HCAPTCHA
-            data = {
-                "clientKey": self.api_key,
-                "task": {
-                    "type": "HCaptchaTaskProxyless",
-                    "websiteURL": page_url,
-                    "websiteKey": site_key,
-                    "isInvisible": True  # ← ¡IMPORTANTE! Es invisible
-                }
+        """MÉTODO PRINCIPAL - Prueba TODO"""
+        if not self.api_key:
+            return None
+        
+        logger.info(f"🎯 SOLVING hCaptcha - Sitekey: {site_key}")
+        logger.info(f"🔗 URL: {page_url}")
+        
+        # Prueba 1: API v2 con diferentes configuraciones
+        solution = self._try_api_v2_configs(site_key, page_url)
+        if solution:
+            return solution
+        
+        # Prueba 2: API antigua con diferentes configuraciones
+        solution = self._try_old_api_configs(site_key, page_url)
+        if solution:
+            return solution
+        
+        # Prueba 3: Último recurso - método manual
+        solution = self._try_manual_method(site_key, page_url)
+        return solution
+    
+    def _try_api_v2_configs(self, site_key, page_url):
+        """Prueba API v2 con diferentes configuraciones"""
+        configs = [
+            # Configuración estándar hCaptcha
+            {
+                "type": "HCaptchaTaskProxyless",
+                "websiteURL": page_url,
+                "websiteKey": site_key,
+                "isInvisible": False,
+                "enterprisePayload": None
+            },
+            # hCaptcha invisible
+            {
+                "type": "HCaptchaTaskProxyless",
+                "websiteURL": page_url,
+                "websiteKey": site_key,
+                "isInvisible": True,
+                "enterprisePayload": None
+            },
+            # Sin especificar invisible
+            {
+                "type": "HCaptchaTaskProxyless",
+                "websiteURL": page_url,
+                "websiteKey": site_key
+            },
+            # Prueba con userAgent (a veces necesario)
+            {
+                "type": "HCaptchaTaskProxyless",
+                "websiteURL": page_url,
+                "websiteKey": site_key,
+                "isInvisible": True,
+                "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             }
+        ]
+        
+        for i, config in enumerate(configs):
+            logger.info(f"🔄 API v2 - Intento {i+1}/{len(configs)}")
             
-            response = requests.post(
-                "https://api.2captcha.com/createTask",
-                json=data,
-                timeout=30,
-                headers={"Content-Type": "application/json"}
-            )
-            
-            result = response.json()
-            logger.info(f"📥 Respuesta createTask: {result}")
-            
-            if result.get("errorId", 1) != 0:
-                error = result.get("errorDescription", "Error desconocido")
-                logger.error(f"❌ Error API v2: {error}")
-                return None
-            
-            task_id = result["taskId"]
-            logger.info(f"✅ Tarea creada: {task_id}")
-            
-            # Esperar solución
-            for i in range(25):  # 100 segundos máximo
-                time.sleep(4)
+            try:
+                data = {
+                    "clientKey": self.api_key,
+                    "task": config
+                }
                 
+                response = requests.post(
+                    "https://api.2captcha.com/createTask",
+                    json=data,
+                    timeout=30,
+                    headers={"Content-Type": "application/json"}
+                )
+                
+                result = response.json()
+                logger.info(f"📥 Respuesta API v2: {result}")
+                
+                if result.get("errorId", 1) == 0:
+                    task_id = result["taskId"]
+                    logger.info(f"✅ Tarea aceptada (ID: {task_id})")
+                    
+                    # Esperar solución
+                    solution = self._wait_for_solution_v2(task_id)
+                    if solution:
+                        logger.info(f"🎉 ¡hCaptcha resuelto con API v2 config {i+1}!")
+                        return solution
+                else:
+                    error = result.get("errorDescription", "Error desconocido")
+                    logger.warning(f"⚠️ API v2 config {i+1} falló: {error}")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Error API v2 config {i+1}: {str(e)[:100]}")
+                continue
+        
+        return None
+    
+    def _wait_for_solution_v2(self, task_id):
+        """Esperar solución API v2"""
+        for i in range(25):  # 100 segundos
+            time.sleep(4)
+            
+            try:
                 params = {
                     "clientKey": self.api_key,
                     "taskId": task_id
                 }
                 
-                resp = requests.post(
+                response = requests.post(
                     "https://api.2captcha.com/getTaskResult",
                     json=params,
                     timeout=30
                 )
                 
-                status_result = resp.json()
-                status = status_result.get("status")
+                result = response.json()
+                status = result.get("status")
                 
-                logger.info(f"⏳ Intento {i+1}/25 - Estado: {status}")
+                logger.info(f"⏳ API v2 - Intento {i+1}: Estado {status}")
                 
                 if status == "ready":
-                    solution = status_result.get("solution", {}).get("gRecaptchaResponse")
+                    solution = result.get("solution", {}).get("gRecaptchaResponse")
                     if solution:
-                        logger.info(f"✅ hCaptcha resuelto en {(i+1)*4}s")
-                        logger.info(f"📦 Token: {solution[:50]}...")
+                        logger.info(f"✅ Solución obtenida (primeros 50 chars): {solution[:50]}...")
                         return solution
                     else:
                         logger.error("❌ No hay gRecaptchaResponse en solución")
@@ -125,17 +181,191 @@ class CaptchaSolver:
                     continue
                 
                 else:
-                    error = status_result.get("errorDescription", "Error")
+                    error = result.get("errorDescription", "Error")
                     logger.error(f"❌ Error en estado: {error}")
                     return None
-            
-            logger.error("❌ Tiempo agotado (100s)")
-            return None
-            
-        except Exception as e:
-            logger.error(f"❌ Error API v2 hCaptcha: {e}")
-            return None
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Error consultando estado: {str(e)[:100]}")
+                continue
         
+        logger.error("❌ Tiempo agotado API v2")
+        return None
+    
+    def _try_old_api_configs(self, site_key, page_url):
+        """Prueba API antigua de 2Captcha"""
+        params_list = [
+            # Configuración estándar
+            {
+                'key': self.api_key,
+                'method': 'hcaptcha',
+                'sitekey': site_key,
+                'pageurl': page_url,
+                'json': 1,
+                'invisible': 0
+            },
+            # hCaptcha invisible
+            {
+                'key': self.api_key,
+                'method': 'hcaptcha',
+                'sitekey': site_key,
+                'pageurl': page_url,
+                'json': 1,
+                'invisible': 1
+            },
+            # Sin parámetro invisible
+            {
+                'key': self.api_key,
+                'method': 'hcaptcha',
+                'sitekey': site_key,
+                'pageurl': page_url,
+                'json': 1
+            },
+            # Prueba con header diferente
+            {
+                'key': self.api_key,
+                'method': 'hcaptcha',
+                'sitekey': site_key,
+                'pageurl': page_url,
+                'json': 1,
+                'header_acao': 1
+            }
+        ]
+        
+        for i, params in enumerate(params_list):
+            logger.info(f"🔄 API antigua - Intento {i+1}/{len(params_list)}")
+            
+            try:
+                response = requests.post(
+                    "https://2captcha.com/in.php",
+                    data=params,
+                    timeout=30,
+                    headers={"User-Agent": "Mozilla/5.0"}
+                )
+                
+                result = response.json()
+                logger.info(f"📥 Respuesta API antigua: {result}")
+                
+                if result.get('status') == 1:
+                    captcha_id = result['request']
+                    logger.info(f"✅ Tarea aceptada (ID: {captcha_id})")
+                    
+                    solution = self._wait_for_solution_old(captcha_id)
+                    if solution:
+                        logger.info(f"🎉 ¡hCaptcha resuelto con API antigua config {i+1}!")
+                        return solution
+                else:
+                    error = result.get('error_text', 'Error desconocido')
+                    logger.warning(f"⚠️ API antigua config {i+1} falló: {error}")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Error API antigua config {i+1}: {str(e)[:100]}")
+                continue
+        
+        return None
+    
+    def _wait_for_solution_old(self, captcha_id):
+        """Esperar solución API antigua"""
+        for i in range(25):  # 100 segundos
+            time.sleep(4)
+            
+            try:
+                params = {
+                    'key': self.api_key,
+                    'action': 'get',
+                    'id': captcha_id,
+                    'json': 1
+                }
+                
+                response = requests.get(
+                    "https://2captcha.com/res.php",
+                    params=params,
+                    timeout=30
+                )
+                
+                result = response.json()
+                logger.info(f"⏳ API antigua - Intento {i+1}: {result}")
+                
+                if result.get('status') == 1:
+                    solution = result['request']
+                    logger.info(f"✅ Solución obtenida (primeros 50 chars): {solution[:50]}...")
+                    return solution
+                
+                elif result.get('request') == 'CAPCHA_NOT_READY':
+                    continue
+                
+                else:
+                    error = result.get('error_text', 'Error')
+                    logger.error(f"❌ Error: {error}")
+                    return None
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ Error consultando estado: {str(e)[:100]}")
+                continue
+        
+        logger.error("❌ Tiempo agotado API antigua")
+        return None
+    
+    def _try_manual_method(self, site_key, page_url):
+        """Último recurso - método manual simple"""
+        logger.info("🔄 Probando método manual...")
+        
+        try:
+            # Intento directo simple
+            params = {
+                'key': self.api_key,
+                'method': 'hcaptcha',
+                'sitekey': site_key,
+                'pageurl': page_url
+            }
+            
+            response = requests.get(
+                "https://2captcha.com/in.php",
+                params=params,
+                timeout=30
+            )
+            
+            text = response.text
+            logger.info(f"📥 Respuesta manual: {text}")
+            
+            if 'OK|' in text:
+                captcha_id = text.split('|')[1]
+                logger.info(f"✅ Tarea manual aceptada: {captcha_id}")
+                
+                # Esperar
+                for i in range(20):
+                    time.sleep(5)
+                    
+                    params = {
+                        'key': self.api_key,
+                        'action': 'get',
+                        'id': captcha_id
+                    }
+                    
+                    resp = requests.get(
+                        "https://2captcha.com/res.php",
+                        params=params,
+                        timeout=30
+                    )
+                    
+                    result_text = resp.text
+                    logger.info(f"⏳ Manual intento {i+1}: {result_text}")
+                    
+                    if 'OK|' in result_text:
+                        solution = result_text.split('|')[1]
+                        logger.info(f"✅ Solución manual obtenida")
+                        return solution
+                        
+                    elif 'CAPCHA_NOT_READY' in result_text:
+                        continue
+                        
+                    else:
+                        break
+                        
+        except Exception as e:
+            logger.error(f"❌ Error método manual: {e}")
+        
+        return None   
 
 class PaymentAnalyzer:
     """Analizador de respuestas de pagos para Edupam"""
@@ -467,6 +697,24 @@ class EdupamChecker:
             if not self.captcha_solver:
                 logger.error(f"❌ API key de 2Captcha no configurada")
                 return False
+            
+            # En solve_captcha_if_present, justo después de obtener site_key:
+
+            logger.info("🔍 DEBUG EXTREMO SITE-KEY")
+            logger.info(f"📏 Longitud: {len(site_key) if site_key else 0}")
+            logger.info(f"📝 Contenido completo: {site_key}")
+            logger.info(f"🔢 Es alfanumérico: {site_key.isalnum() if site_key else False}")
+            logger.info(f"📍 Contiene guiones: {'-' in site_key if site_key else False}")
+
+            # Verificar formato típico de hCaptcha sitekey
+            # Los sitekeys de hCaptcha suelen ser UUIDs: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+            import re
+            if site_key:
+                uuid_pattern = r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$'
+                if re.match(uuid_pattern, site_key.lower()):
+                    logger.info("✅ Site-key tiene formato UUID válido")
+                else:
+                    logger.warning("⚠️ Site-key NO tiene formato UUID típico")
             
             # 5. Resolver hCaptcha
             logger.info(f"🔄 Resolviendo hCaptcha para ****{card_last4}...")
