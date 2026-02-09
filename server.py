@@ -48,47 +48,39 @@ checking_status = {
 
 
 class CaptchaSolver:
-    """Clase para resolver captchas usando API de 2Captcha"""
-    
     def __init__(self, api_key):
         self.api_key = api_key
         self.base_url = "https://2captcha.com"
-        
-    def solve_recaptcha_v2(self, site_key, page_url):
-        """Resolver reCAPTCHA v2 usando la API de 2Captcha"""
+    
+    def solve_hcaptcha(self, site_key, page_url):
+        """Resolver hCaptcha"""
         try:
             if not self.api_key:
-                logger.warning("⚠️ API key de 2Captcha no configurada")
                 return None
             
-            # Enviar captcha a 2Captcha
             params = {
                 'key': self.api_key,
-                'method': 'userrecaptcha',
-                'googlekey': site_key,
+                'method': 'hcaptcha',  # ¡IMPORTANTE! Es hcaptcha, NO userrecaptcha
+                'sitekey': site_key,   # sitekey (no googlekey)
                 'pageurl': page_url,
-                'json': 1,
-                'invisible': 0  # Captcha visible, NO invisible
+                'json': 1
             }
             
-            logger.info(f"🔄 Enviando reCAPTCHA v2 a 2Captcha...")
-            logger.info(f"📊 Site key: {site_key[:20]}...")
-            logger.info(f"🌐 URL: {page_url}")
-            
+            logger.info(f"🔄 Enviando hCaptcha a 2Captcha...")
             response = requests.post(f"{self.base_url}/in.php", data=params, timeout=30)
             result = response.json()
             
             if result.get('status') != 1:
                 error = result.get('error_text', 'Error desconocido')
-                logger.error(f"❌ Error 2Captcha: {error}")
+                logger.error(f"❌ Error hCaptcha: {error}")
                 return None
             
             captcha_id = result['request']
-            logger.info(f"✅ Captcha enviado. ID: {captcha_id}")
+            logger.info(f"✅ hCaptcha enviado. ID: {captcha_id}")
             
-            # Esperar solución (hasta 2 minutos)
-            for i in range(30):  # 30 * 4 = 120 segundos
-                time.sleep(4)  # Esperar 4 segundos entre intentos
+            # Esperar solución
+            for i in range(30):
+                time.sleep(4)
                 
                 params = {
                     'key': self.api_key,
@@ -102,26 +94,21 @@ class CaptchaSolver:
                 
                 if result.get('status') == 1:
                     solution = result['request']
-                    logger.info(f"✅ Captcha resuelto en {(i+1)*4} segundos")
-                    logger.info(f"📦 Solución (primeros 30 chars): {solution[:30]}...")
+                    logger.info(f"✅ hCaptcha resuelto en {(i+1)*4}s")
                     return solution
                 elif result.get('request') == 'CAPCHA_NOT_READY':
-                    if (i+1) % 5 == 0:  # Log cada 20 segundos
-                        logger.info(f"⏳ Captcha no listo... {i+1}/30 intentos")
                     continue
                 else:
                     error = result.get('error_text', 'Error desconocido')
-                    logger.error(f"❌ Error al resolver captcha: {error}")
+                    logger.error(f"❌ Error resolviendo hCaptcha: {error}")
                     return None
             
-            logger.error("❌ Tiempo de espera agotado para captcha (2 minutos)")
+            logger.error("❌ Tiempo agotado para hCaptcha")
             return None
             
         except Exception as e:
-            logger.error(f"❌ Error en solve_recaptcha_v2: {e}")
-            return None     
-
-
+            logger.error(f"❌ Error en solve_hcaptcha: {e}")
+            return None
 
 
 class PaymentAnalyzer:
@@ -313,197 +300,170 @@ class EdupamChecker:
 
 
 
-
-
-
     def solve_captcha_if_present(self, page, card_last4):
-        """Detectar y resolver captcha si está presente"""
+        """Detectar y resolver hCaptcha si está presente"""
         try:
             time.sleep(3)
             
-            # 1. Buscar TODOS los iframes en la página
-            logger.info("=" * 50)
-            logger.info("🔍 DEBUG: Listando TODOS los iframes...")
-            iframes = page.frames
-            for i, frame in enumerate(iframes):
-                try:
-                    url = frame.url
-                    logger.info(f"Iframe {i}: {url[:100]}")
-                except:
-                    logger.info(f"Iframe {i}: [no se pudo obtener URL]")
-            logger.info("=" * 50)
-            
+            # 1. Detectar hCaptcha
             site_key = None
             captcha_detected = False
             
-            # 2. Buscar en cada iframe
-            for i, frame in enumerate(iframes):
-                try:
-                    # Obtener URL del iframe
-                    iframe_url = frame.url
-                    
-                    # Verificar si es un iframe de recaptcha
-                    if 'google.com/recaptcha' in iframe_url:
-                        logger.info(f"✅ Iframe {i} es de reCAPTCHA: {iframe_url[:50]}...")
-                        captcha_detected = True
+            # Buscar site-key de hCaptcha
+            try:
+                # hCaptcha usa data-sitekey igual que reCAPTCHA
+                site_key = page.evaluate("""
+                    () => {
+                        // Buscar hCaptcha
+                        const hcaptchaElement = document.querySelector('[data-sitekey]');
+                        if (hcaptchaElement && 
+                            (hcaptchaElement.classList.contains('h-captcha') || 
+                            hcaptchaElement.id === 'hcaptcha-container' ||
+                            window.hcaptcha)) {
+                            return hcaptchaElement.getAttribute('data-sitekey');
+                        }
                         
-                        # Extraer site-key de la URL del iframe
-                        match = re.search(r'[?&]k=([^&]+)', iframe_url)
-                        if match:
-                            site_key = match.group(1)
-                            logger.info(f"✅ Site-key encontrado en iframe: {site_key[:30]}...")
-                            break
+                        // Buscar en iframes de hcaptcha
+                        const iframes = document.querySelectorAll('iframe');
+                        for (let iframe of iframes) {
+                            const src = iframe.src || '';
+                            if (src.includes('hcaptcha.com')) {
+                                // Extraer sitekey de parámetros
+                                const match = src.match(/[?&]sitekey=([^&]+)/);
+                                if (match) return match[1];
+                            }
+                        }
                         
-                        # También buscar en el contenido del iframe
-                        try:
-                            # Evaluar dentro del iframe
-                            site_key_in_frame = frame.evaluate("""
-                                () => {
-                                    // Buscar data-sitekey dentro del iframe
-                                    const sitekeyEl = document.querySelector('[data-sitekey]');
-                                    if (sitekeyEl) {
-                                        return sitekeyEl.getAttribute('data-sitekey');
-                                    }
-                                    return null;
-                                }
-                            """)
-                            
-                            if site_key_in_frame:
-                                site_key = site_key_in_frame
-                                logger.info(f"✅ Site-key encontrado en contenido del iframe: {site_key[:30]}...")
-                                break
-                        except:
-                            continue
+                        return null;
+                    }
+                """)
                 
-                except Exception as e:
-                    logger.debug(f"⚠️ Error analizando iframe {i}: {e}")
-                    continue
-            
-            # 3. Si no se encontró en iframes, buscar en el documento principal
-            if not site_key:
-                try:
-                    # Buscar site-key en elementos del documento principal
-                    selectors = [
-                        'div[data-sitekey]',
-                        '.g-recaptcha[data-sitekey]',
-                        'iframe[src*="recaptcha"][data-sitekey]'
-                    ]
+                if site_key:
+                    logger.info(f"✅ Site-key hCaptcha encontrado: {site_key[:30]}...")
+                    captcha_detected = True
                     
-                    for selector in selectors:
-                        try:
-                            if page.locator(selector).count() > 0:
+            except Exception as e:
+                logger.warning(f"⚠️ Error buscando hCaptcha con JS: {e}")
+            
+            # 2. Si no se encontró, buscar por texto o elementos
+            if not captcha_detected:
+                # Verificar contenido de página
+                page_text = page.content().lower()
+                hcaptcha_indicators = [
+                    'hcaptcha',
+                    'i am human',
+                    'soy humano',
+                    'one more step',
+                    'select the checkbox'
+                ]
+                
+                if any(indicator in page_text for indicator in hcaptcha_indicators):
+                    captcha_detected = True
+                    logger.info("✅ hCaptcha detectado por texto en página")
+                
+                # Verificar elementos hCaptcha
+                hcaptcha_selectors = [
+                    '.h-captcha',
+                    '[data-sitekey]',  # Podría ser hCaptcha
+                    'iframe[src*="hcaptcha"]',
+                    'div#hcaptcha-container'
+                ]
+                
+                for selector in hcaptcha_selectors:
+                    try:
+                        if page.locator(selector).count() > 0:
+                            captcha_detected = True
+                            logger.info(f"✅ hCaptcha detectado por selector: {selector}")
+                            
+                            # Intentar obtener site-key
+                            if not site_key and 'data-sitekey' in selector:
                                 site_key = page.locator(selector).first.get_attribute('data-sitekey')
                                 if site_key:
-                                    logger.info(f"✅ Site-key encontrado en elemento principal: {site_key[:30]}...")
-                                    captcha_detected = True
-                                    break
-                        except:
-                            continue
-                except Exception as e:
-                    logger.warning(f"⚠️ Error buscando en documento principal: {e}")
+                                    logger.info(f"✅ Site-key obtenido: {site_key[:30]}...")
+                            break
+                    except:
+                        continue
             
-            # 4. Si no hay captcha detectado
+            # 3. Si no hay captcha
             if not captcha_detected:
                 logger.info(f"✅ No se detectó captcha para ****{card_last4}")
                 return True
             
-            # 5. Si hay captcha pero no site-key
+            # 4. Si hay captcha pero no site-key
             if not site_key:
-                logger.error(f"❌ Captcha detectado pero no se pudo obtener site-key para ****{card_last4}")
-                # Intentar extraer de cualquier iframe que contenga 'recaptcha' en la URL
-                for frame in iframes:
+                logger.error(f"❌ hCaptcha detectado pero sin site-key para ****{card_last4}")
+                
+                # Intentar extraer de cualquier iframe hcaptcha
+                for frame in page.frames:
                     try:
-                        iframe_url = frame.url
-                        if 'recaptcha' in iframe_url.lower():
-                            # Extraer k=xxxx de la URL
-                            import urllib.parse
-                            parsed = urllib.parse.urlparse(iframe_url)
-                            params = urllib.parse.parse_qs(parsed.query)
-                            if 'k' in params:
-                                site_key = params['k'][0]
-                                logger.info(f"✅ Site-key extraído de parámetros URL: {site_key[:30]}...")
+                        frame_url = frame.url
+                        if 'hcaptcha' in frame_url.lower():
+                            # Extraer sitekey de la URL
+                            match = re.search(r'[?&]sitekey=([^&]+)', frame_url)
+                            if match:
+                                site_key = match.group(1)
+                                logger.info(f"✅ Site-key extraído de URL iframe: {site_key[:30]}...")
                                 break
                     except:
                         continue
             
             if not site_key:
-                logger.error(f"❌ No se pudo obtener site-key después de todos los intentos")
+                logger.error(f"❌ No se pudo obtener site-key de hCaptcha")
                 return False
             
             if not self.captcha_solver:
                 logger.error(f"❌ API key de 2Captcha no configurada")
                 return False
             
-            # 6. Resolver captcha
-            logger.info(f"🔄 Resolviendo captcha para ****{card_last4}...")
+            # 5. Resolver hCaptcha
+            logger.info(f"🔄 Resolviendo hCaptcha para ****{card_last4}...")
             page_url = page.url
-            solution = self.captcha_solver.solve_recaptcha_v2(site_key, page_url)
+            solution = self.solve_hcaptcha(site_key, page_url)  # Necesitas este método
             
             if not solution:
-                logger.error(f"❌ No se pudo resolver el captcha")
+                logger.error(f"❌ No se pudo resolver el hCaptcha")
                 return False
             
-            logger.info(f"✅ Captcha resuelto, solución obtenida")
+            logger.info(f"✅ hCaptcha resuelto")
             
-            # 7. Inyectar solución
+            # 6. Inyectar solución (similar a reCAPTCHA pero con campo diferente)
             try:
-                # Método más robusto: usar evaluate con parámetros
                 page.evaluate("""
                     (solution) => {
-                        console.log('🎯 Intentando inyectar solución de captcha...');
+                        console.log('🎯 Inyectando solución hCaptcha...');
                         
-                        // 1. Buscar campo existente
-                        let field = document.getElementById('g-recaptcha-response');
+                        // hCaptcha usa 'h-captcha-response'
+                        let field = document.querySelector('[name="h-captcha-response"]');
                         if (!field) {
-                            field = document.querySelector('[name="g-recaptcha-response"]');
+                            field = document.getElementById('h-captcha-response');
                         }
                         
-                        // 2. Si no existe, crearlo
+                        // Crear si no existe
                         if (!field) {
                             field = document.createElement('textarea');
-                            field.id = 'g-recaptcha-response';
-                            field.name = 'g-recaptcha-response';
+                            field.name = 'h-captcha-response';
                             field.style.display = 'none';
                             document.body.appendChild(field);
-                            console.log('✅ Campo creado');
+                            console.log('✅ Campo h-captcha-response creado');
                         }
                         
-                        // 3. Asignar valor
+                        // Asignar valor
                         field.value = solution;
-                        console.log('✅ Valor asignado');
+                        console.log('✅ Solución asignada');
                         
-                        // 4. Disparar eventos
-                        const events = ['change', 'input', 'blur'];
-                        events.forEach(eventType => {
-                            const event = new Event(eventType, { bubbles: true });
-                            field.dispatchEvent(event);
+                        // Disparar eventos
+                        ['change', 'input', 'blur'].forEach(eventType => {
+                            field.dispatchEvent(new Event(eventType, { bubbles: true }));
                         });
                         
                         console.log('✅ Eventos disparados');
-                        
-                        // 5. También intentar en iframes
-                        const frames = document.querySelectorAll('iframe');
-                        frames.forEach(frame => {
-                            try {
-                                const frameDoc = frame.contentDocument || frame.contentWindow.document;
-                                const frameField = frameDoc.getElementById('g-recaptcha-response') || 
-                                                frameDoc.querySelector('[name="g-recaptcha-response"]');
-                                if (frameField) {
-                                    frameField.value = solution;
-                                    console.log('✅ También inyectado en iframe');
-                                }
-                            } catch(e) {
-                                // Ignorar errores de cross-origin
-                            }
-                        });
-                        
                         return true;
                     }
                 """, solution)
                 
                 time.sleep(2)
                 
-                # 8. Re-enviar formulario
+                # Re-enviar formulario
                 btn = page.locator('#btn-donation')
                 if btn.count() > 0:
                     logger.info(f"✅ Re-enviando formulario...")
@@ -513,17 +473,12 @@ class EdupamChecker:
                 return True
                 
             except Exception as e:
-                logger.error(f"❌ Error inyectando solución: {e}")
+                logger.error(f"❌ Error inyectando solución hCaptcha: {e}")
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ Error general en solve_captcha_if_present: {e}")
+            logger.error(f"❌ Error en solve_captcha_if_present: {e}")
             return False
-
-
-
-
-
 
 
     
