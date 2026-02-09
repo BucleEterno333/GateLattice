@@ -322,8 +322,16 @@ class EdupamChecker:
             time.sleep(3)
             
             # 1. Buscar TODOS los iframes en la página
+            logger.info("=" * 50)
+            logger.info("🔍 DEBUG: Listando TODOS los iframes...")
             iframes = page.frames
-            logger.info(f"🔍 Analizando {len(iframes)} iframes para captcha...")
+            for i, frame in enumerate(iframes):
+                try:
+                    url = frame.url
+                    logger.info(f"Iframe {i}: {url[:100]}")
+                except:
+                    logger.info(f"Iframe {i}: [no se pudo obtener URL]")
+            logger.info("=" * 50)
             
             site_key = None
             captcha_detected = False
