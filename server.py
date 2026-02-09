@@ -10,6 +10,7 @@ import requests
 import logging
 from datetime import datetime
 import base64 
+import twocaptcha
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -43,94 +44,49 @@ checking_status = {
     'stop_on_live': False
 }
 
-
 class CaptchaSolver:
-    """Clase para resolver captchas usando 2Captcha API v2"""
+    """Clase para resolver captchas usando librería oficial 2captcha"""
     
     def __init__(self, api_key):
         self.api_key = api_key
-        self.base_url = "https://api.2captcha.com"
+        self.solver = None
         
+        if api_key:
+            try:
+                # Inicializar solver oficial
+                self.solver = twocaptcha.TwoCaptcha(api_key)
+                logger.info("✅ Solver 2Captcha inicializado con librería oficial")
+            except Exception as e:
+                logger.error(f"❌ Error inicializando 2Captcha: {e}")
+                self.solver = None
+    
     def solve_recaptcha_v2(self, site_key, page_url):
-        """Resolver reCAPTCHA v2 usando API v2"""
+        """Resolver reCAPTCHA v2 usando librería oficial"""
         try:
-            if not self.api_key:
-                logger.warning("⚠️ API key de 2Captcha no configurada")
+            if not self.solver:
+                logger.warning("⚠️ Solver de 2Captcha no inicializado")
                 return None
             
-            # Usar API v2 - crear tarea
-            params = {
-                "clientKey": self.api_key,
-                "task": {
-                    "type": "RecaptchaV2TaskProxyless",
-                    "websiteURL": page_url,
-                    "websiteKey": site_key,
-                    "isInvisible": False
-                }
-            }
+            logger.info(f"🔄 Resolviendo reCAPTCHA v2 con librería oficial...")
             
-            logger.info(f"🔄 Enviando reCAPTCHA v2 a 2Captcha API v2...")
-            
-            # Crear tarea
-            response = requests.post(
-                f"{self.base_url}/createTask",
-                json=params,
-                timeout=30
+            result = self.solver.recaptcha(
+                sitekey=site_key,
+                url=page_url,
+                version='v2'
             )
-            result = response.json()
             
-            logger.info(f"📥 Respuesta createTask: {result}")
-            
-            if result.get('errorId') != 0:
-                error_text = result.get('errorDescription', 'Unknown error')
-                logger.error(f"❌ Error 2Captcha API v2: {error_text}")
+            if result and result.get('code'):
+                logger.info(f"✅ Captcha resuelto: {result['code'][:20]}...")
+                return result['code']
+            else:
+                logger.error("❌ No se obtuvo solución del captcha")
                 return None
-            
-            task_id = result['taskId']
-            logger.info(f"✅ Tarea creada. ID: {task_id}")
-            
-            # Esperar solución (hasta 2 minutos)
-            for i in range(24):  # 24 * 5 = 120 segundos
-                time.sleep(5)
                 
-                get_result_params = {
-                    "clientKey": self.api_key,
-                    "taskId": task_id
-                }
-                
-                response = requests.post(
-                    f"{self.base_url}/getTaskResult",
-                    json=get_result_params,
-                    timeout=30
-                )
-                result = response.json()
-                
-                logger.info(f"📊 Estado tarea {i+1}: {result.get('status')}")
-                
-                if result.get('status') == 'ready':
-                    solution = result['solution'].get('gRecaptchaResponse')
-                    if solution:
-                        logger.info(f"✅ Captcha resuelto en {(i+1)*5} segundos")
-                        return solution
-                    else:
-                        logger.error("❌ No se recibió gRecaptchaResponse en la solución")
-                        return None
-                elif result.get('status') == 'processing':
-                    if (i+1) % 3 == 0:  # Log cada 15 segundos
-                        logger.info(f"⏳ Procesando... {i+1}/24 intentos")
-                    continue
-                else:
-                    error_text = result.get('errorDescription', 'Unknown error')
-                    logger.error(f"❌ Error al resolver captcha: {error_text}")
-                    return None
-            
-            logger.error("❌ Tiempo de espera agotado para captcha (2 minutos)")
-            return None
-            
         except Exception as e:
             logger.error(f"❌ Error en solve_recaptcha_v2: {e}")
             return None
-
+        
+        
 class PaymentAnalyzer:
     """Analizador de respuestas de pagos para Edupam"""
     
