@@ -562,74 +562,185 @@ class EdupamChecker:
             logger.error(f"Error llenando tarjeta: {e}")
             return False
         
+
     def bypass_hcaptcha_manually(self, page, card_last4):
-        """Intentar resolver hCaptcha interactuando directamente - VERSIÓN SIMPLE"""
+        """Intentar resolver hCaptcha - VERSIÓN MEJORADA que navega iframes"""
         try:
             logger.info(f"🔄 Intentando bypass manual para ****{card_last4}")
-            
             time.sleep(2)
             
-            # Buscar iframe de hCaptcha
-            target_frame = None
+            # Buscar TODOS los iframes relacionados con hCaptcha
+            hcaptcha_frames = []
             for frame in page.frames:
                 frame_url = frame.url.lower()
-                if 'newassets.hcaptcha.com' in frame_url:
-                    target_frame = frame
-                    logger.info(f"✅ Iframe encontrado: {frame_url[:100]}...")
-                    break
+                if 'hcaptcha' in frame_url:
+                    hcaptcha_frames.append({
+                        'frame': frame,
+                        'url': frame_url,
+                        'is_checkbox': 'frame=checkbox' in frame_url  # ← ¡IMPORTANTE!
+                    })
+                    logger.info(f"📋 Frame: {'(CHECKBOX)' if 'frame=checkbox' in frame_url else ''} {frame_url[:100]}...")
             
-            if not target_frame:
-                logger.info("❌ No se encontró iframe de hCaptcha")
+            if not hcaptcha_frames:
+                logger.error("❌ No se encontraron iframes de hCaptcha")
                 return False
             
-            # Intentar hacer clic en el checkbox
+            # PRIORIDAD 1: Buscar el iframe con frame=checkbox (¡ESTE ES EL CORRECTO!)
+            checkbox_frame = None
+            for frame_info in hcaptcha_frames:
+                if frame_info['is_checkbox']:
+                    checkbox_frame = frame_info['frame']
+                    logger.info(f"✅ ¡Encontrado iframe CHECKBOX!")
+                    break
+            
+            # PRIORIDAD 2: Si no hay frame=checkbox, usar el primer iframe de newassets
+            if not checkbox_frame:
+                for frame_info in hcaptcha_frames:
+                    if 'newassets.hcaptcha.com' in frame_info['url']:
+                        checkbox_frame = frame_info['frame']
+                        logger.info(f"✅ Usando iframe newassets como alternativa")
+                        break
+            
+            if not checkbox_frame:
+                logger.error("❌ No se pudo encontrar iframe adecuado")
+                return False
+            
+            # INTENTAR MÚLTIPLES MÉTODOS DE CLIC
+            logger.info("🎯 Intentando múltiples métodos de clic...")
+            
+            # Método 1: Clic directo con Playwright (el más confiable)
             try:
-                # Método 1: Clic en #checkbox
-                target_frame.click('#checkbox', timeout=2000)
-                logger.info("✅ Clic en #checkbox")
-            except:
+                checkbox_frame.click('#checkbox', timeout=3000)
+                logger.info("✅ Método 1: Clic directo con click()")
+            except Exception as e:
+                logger.warning(f"⚠️ Método 1 falló: {e}")
+                
+                # Método 2: Clic con JavaScript + eventos completos
                 try:
-                    # Método 2: Clic en [role="checkbox"]
-                    target_frame.click('[role="checkbox"]', timeout=2000)
-                    logger.info("✅ Clic en [role='checkbox']")
-                except:
-                    # Método 3: Clic por JavaScript
-                    target_frame.evaluate("""
+                    clicked = checkbox_frame.evaluate("""
                         () => {
                             const checkbox = document.getElementById('checkbox');
-                            if (checkbox) {
-                                checkbox.click();
-                                return true;
+                            if (!checkbox) {
+                                console.log('❌ No se encontró #checkbox');
+                                return false;
                             }
-                            return false;
+                            
+                            console.log('✅ #checkbox encontrado:', checkbox);
+                            
+                            // Simular clic COMPLETO con todos los eventos
+                            const mouseDown = new MouseEvent('mousedown', {
+                                bubbles: true,
+                                cancelable: true,
+                                view: window
+                            });
+                            
+                            const mouseUp = new MouseEvent('mouseup', {
+                                bubbles: true,
+                                cancelable: true,
+                                view: window
+                            });
+                            
+                            const clickEvent = new MouseEvent('click', {
+                                bubbles: true,
+                                cancelable: true,
+                                view: window,
+                                detail: 1
+                            });
+                            
+                            checkbox.dispatchEvent(mouseDown);
+                            checkbox.dispatchEvent(mouseUp);
+                            checkbox.dispatchEvent(clickEvent);
+                            
+                            // También hacer focus
+                            checkbox.focus();
+                            
+                            console.log('✅ Eventos de clic disparados');
+                            return true;
                         }
                     """)
-                    logger.info("✅ Clic por JavaScript")
+                    
+                    if clicked:
+                        logger.info("✅ Método 2: Clic con eventos JavaScript")
+                    else:
+                        logger.warning("⚠️ Método 2: No se pudo hacer clic")
+                        
+                except Exception as e2:
+                    logger.warning(f"⚠️ Método 2 falló: {e2}")
+                    
+                    # Método 3: Clic por coordenadas EN EL IFRAME CORRECTO
+                    try:
+                        # Evaluar posición del checkbox dentro del iframe
+                        checkbox_pos = checkbox_frame.evaluate("""
+                            () => {
+                                const checkbox = document.getElementById('checkbox');
+                                if (!checkbox) return null;
+                                
+                                const rect = checkbox.getBoundingClientRect();
+                                return {
+                                    x: rect.left + rect.width / 2,
+                                    y: rect.top + rect.height / 2
+                                };
+                            }
+                        """)
+                        
+                        if checkbox_pos:
+                            # Hacer clic en la posición RELATIVA dentro del iframe
+                            checkbox_frame.evaluate("""
+                                ([x, y]) => {
+                                    const element = document.elementFromPoint(x, y);
+                                    if (element) {
+                                        element.click();
+                                        return true;
+                                    }
+                                    return false;
+                                }
+                            """, [checkbox_pos['x'], checkbox_pos['y']])
+                            
+                            logger.info(f"✅ Método 3: Clic por coordenadas ({checkbox_pos['x']:.0f}, {checkbox_pos['y']:.0f})")
+                            
+                    except Exception as e3:
+                        logger.warning(f"⚠️ Método 3 falló: {e3}")
             
+            # Esperar y verificar
+            logger.info("⏳ Esperando resultado del clic...")
             time.sleep(5)
             
-            # ⬇⬇⬇ AQUÍ AGREGAMOS LA VERIFICACIÓN QUE PEDISTE ⬇⬇⬇
-            # Verificar si aún hay captcha (podría aparecer desafío difícil)
-            captcha_still_present = False
+            # Verificar si el captcha desapareció
+            page_content = page.content().lower()
+            
+            # Buscar el iframe de checkbox específicamente
+            checkbox_still_present = False
             for frame in page.frames:
-                if 'newassets' in frame.url.lower():
-                    captcha_still_present = True
-                    logger.info("⚠️ Captcha aún presente después del clic (posible desafío difícil)")
+                if 'frame=checkbox' in frame.url.lower():
+                    checkbox_still_present = True
+                    logger.info("⚠️ Iframe CHECKBOX aún presente")
                     break
             
-            # También verificar en el contenido de la página
-            page_content = page.content().lower()
-            if 'hcaptcha' in page_content or 'i am human' in page_content:
-                captcha_still_present = True
-                logger.info("⚠️ Texto de captcha aún en página")
+            # Verificar texto del captcha
+            if 'hcaptcha' in page_content or 'i am human' in page_content or 'selecciona' in page_content:
+                checkbox_still_present = True
+                logger.info("⚠️ Texto de captcha aún visible")
             
-            if captcha_still_present:
-                logger.warning("❌ Después del clic, el captcha sigue presente")
-                return False
+            if checkbox_still_present:
+                # Intentar clic en el botón de envío (a veces activa el captcha)
+                try:
+                    page.click('#btn-donation', timeout=2000)
+                    time.sleep(3)
+                    logger.info("✅ Clic adicional en botón de envío")
+                except:
+                    pass
+                
+                # Verificar nuevamente
+                page_content = page.content().lower()
+                if 'hcaptcha' not in page_content:
+                    logger.info("✅ ¡Captcha desapareció después del segundo intento!")
+                    return True
+                else:
+                    logger.warning("❌ Captcha sigue presente después de todos los intentos")
+                    return False
             else:
-                logger.info("✅ ¡Captcha desapareció después del clic!")
+                logger.info("✅ ¡Captcha resuelto exitosamente!")
                 return True
-            # ⬆⬆⬆ FIN DE LA VERIFICACIÓN AGREGADA ⬆⬆⬆
                 
         except Exception as e:
             logger.error(f"❌ Error en bypass manual: {e}")
