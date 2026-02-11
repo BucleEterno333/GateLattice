@@ -400,9 +400,13 @@ class CaptchaSolver:
                         return true;
                     }
                 """)
+
+                # ¡Aquí usamos la variable clicked!
+                logger.info(f"Resultado del clic: {clicked}")
                 
-                logger.info("✅ Clic realizado en iframe hCaptcha")
-                time.sleep(5)
+                if clicked:
+                    logger.info("✅ Clic realizado en iframe hCaptcha")
+                    time.sleep(5)
                 
                 # Verificar si se resolvió
                 page_content = page.content().lower()
@@ -606,60 +610,23 @@ class EdupamChecker:
             return False
     
     def extract_hcaptcha_sitekey(self, page):
-        """Extraer site-key de hCaptcha de manera robusta"""
+        """Extraer site-key"""
         site_key = None
         
         try:
             # Método 1: Buscar en iframes
             for frame in page.frames:
-                frame_url = frame.url.lower()
-                if 'hcaptcha' in frame_url:
-                    logger.info(f"🔍 Analizando iframe hCaptcha")
-                    
-                    # Extraer de parámetros URL
-                    parsed = urllib.parse.urlparse(frame.url)
-                    params = urllib.parse.parse_qs(parsed.query)
-                    
-                    if 'sitekey' in params:
-                        site_key = params['sitekey'][0]
-                        logger.info(f"✅ Site-key de iframe: {site_key[:30]}...")
+                try:
+                    frame_url = frame.url
+                    if 'hcaptcha' in frame_url.lower():
+                        # Extraer sitekey de la URL
+                        match = re.search(r'[?&]sitekey=([^&]+)', frame_url)
+                        if match:
+                            site_key = match.group(1)
+                            logger.info(f"✅ Site-key extraído de URL iframe: {site_key[:30]}...")
                         break
-            
-            # Método 2: Buscar en el DOM
-            if not site_key:
-                site_key = page.evaluate("""
-                    () => {
-                        // Buscar elemento con data-sitekey
-                        const element = document.querySelector('[data-sitekey]');
-                        if (element) {
-                            return element.getAttribute('data-sitekey');
-                        }
-                        
-                        // Buscar scripts con hcaptcha
-                        const scripts = document.querySelectorAll('script');
-                        for (let script of scripts) {
-                            const content = script.textContent || '';
-                            if (content.includes('hcaptcha')) {
-                                const match = content.match(/sitekey["']?\\s*[:=]\\s*["']([^"']+)["']/i);
-                                if (match) return match[1];
-                            }
-                        }
-                        
-                        return null;
-                    }
-                """)
-                
-                if site_key:
-                    logger.info(f"✅ Site-key del DOM: {site_key[:30]}...")
-            
-            # Método 3: Buscar por regex en HTML
-            if not site_key:
-                page_content = page.content()
-                matches = re.findall(r'sitekey["\']?\s*[:=]\s*["\']([^"\']+)["\']', page_content, re.I)
-                if matches:
-                    site_key = matches[0]
-                    logger.info(f"✅ Site-key por regex: {site_key[:30]}...")
-        
+                except:
+                    continue
         except Exception as e:
             logger.error(f"❌ Error extrayendo site-key: {e}")
         
