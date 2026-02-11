@@ -352,77 +352,228 @@ class CaptchaSolver:
     def bypass_hcaptcha_manually(self, page, card_last4):
         """Intentar resolver hCaptcha interactuando directamente"""
         try:
-            # Buscar iframe de hCaptcha
-            hcaptcha_frame = None
-            for frame in page.frames:
-                if 'hcaptcha.com' in frame.url:
-                    hcaptcha_frame = frame
-                    break
+            logger.info(f"🔄 Intentando bypass manual para ****{card_last4}")
             
-            if not hcaptcha_frame:
-                logger.info("❌ No se encontró iframe hCaptcha")
+            # Primero, buscar todos los iframes de hCaptcha
+            hcaptcha_frames = []
+            for frame in page.frames:
+                frame_url = frame.url.lower()
+                if 'hcaptcha.com' in frame_url or 'hcaptcha' in frame_url:
+                    hcaptcha_frames.append(frame)
+                    logger.info(f"🔍 Iframe hCaptcha encontrado: {frame_url[:80]}...")
+            
+            if not hcaptcha_frames:
+                logger.info("❌ No se encontraron iframes hCaptcha")
+                
+                # Intentar buscar elementos hCaptcha directamente
+                hcaptcha_elements = page.locator('.h-captcha, [data-sitekey], iframe[src*="hcaptcha"]')
+                if hcaptcha_elements.count() > 0:
+                    logger.info(f"✅ Elementos hCaptcha encontrados en DOM: {hcaptcha_elements.count()}")
+                    # Intentar hacer clic en el contenedor principal
+                    page.click('.h-captcha, [data-sitekey]', timeout=2000)
+                    time.sleep(3)
+                    return True
                 return False
             
-            logger.info(f"✅ Iframe hCaptcha encontrado")
+            # Usar el primer iframe encontrado
+            hcaptcha_frame = hcaptcha_frames[0]
+            logger.info(f"✅ Iframe hCaptcha seleccionado para interacción")
             
-            # Intentar hacer clic en el checkbox dentro del iframe
-            try:
-                # Evaluar dentro del iframe
-                clicked = hcaptcha_frame.evaluate("""
-                    () => {
-                        // Buscar checkbox de hCaptcha
-                        const checkbox = document.querySelector('#checkbox');
-                        if (checkbox) {
-                            checkbox.click();
-                            console.log('✅ Checkbox encontrado y clickeado');
-                            return true;
-                        }
+            # Intentar varias estrategias de clic con posiciones específicas
+            click_strategies = [
+                # Estrategia 1: Buscar checkbox directamente
+                """
+                () => {
+                    console.log('🎯 Estrategia 1: Buscando checkbox...');
+                    const checkbox = document.querySelector('#checkbox, .checkbox');
+                    if (checkbox) {
+                        console.log('✅ Checkbox encontrado, haciendo clic...');
+                        checkbox.click();
+                        return true;
+                    }
+                    console.log('❌ Checkbox no encontrado');
+                    return false;
+                }
+                """,
+                
+                # Estrategia 2: Buscar elementos con rol de checkbox
+                """
+                () => {
+                    console.log('🎯 Estrategia 2: Buscando elementos con role="checkbox"...');
+                    const checkboxes = document.querySelectorAll('[role="checkbox"]');
+                    if (checkboxes.length > 0) {
+                        console.log(`✅ ${checkboxes.length} elementos checkbox encontrados`);
+                        checkboxes[0].click();
+                        return true;
+                    }
+                    console.log('❌ No hay elementos con role="checkbox"');
+                    return false;
+                }
+                """,
+                
+                # Estrategia 3: Buscar elementos de hCaptcha
+                """
+                () => {
+                    console.log('🎯 Estrategia 3: Buscando elementos hCaptcha...');
+                    const hcaptchaDivs = document.querySelectorAll('.hcaptcha-box, .h-captcha');
+                    if (hcaptchaDivs.length > 0) {
+                        console.log(`✅ ${hcaptchaDivs.length} elementos hCaptcha encontrados`);
+                        hcaptchaDivs[0].click();
+                        return true;
+                    }
+                    console.log('❌ No hay elementos hCaptcha visibles');
+                    return false;
+                }
+                """,
+                
+                # Estrategia 4: Clic en posición específica (15% horizontal, 60% vertical)
+                """
+                () => {
+                    console.log('🎯 Estrategia 4: Clic en posición específica (15%, 60%)...');
+                    const rect = document.body.getBoundingClientRect();
+                    const targetX = rect.width * 0.15;  // 15% desde la izquierda
+                    const targetY = rect.height * 0.60; // 60% desde arriba
+                    
+                    console.log(`📏 Dimensiones del iframe: ${rect.width}x${rect.height}`);
+                    console.log(`🎯 Posición objetivo: ${targetX}, ${targetY}`);
+                    
+                    // Encontrar elemento en la posición específica
+                    const element = document.elementFromPoint(targetX, targetY);
+                    if (element) {
+                        console.log('✅ Elemento en posición encontrado, haciendo clic...');
                         
-                        // Buscar cualquier elemento clickeable
-                        const clickable = document.querySelector('[role="checkbox"], .hcaptcha-box, .checkbox');
-                        if (clickable) {
-                            clickable.click();
-                            console.log('✅ Elemento clickeable encontrado');
-                            return true;
-                        }
-                        
-                        // Hacer clic en el centro del iframe
-                        const rect = document.body.getBoundingClientRect();
+                        // Crear un clic más preciso
                         const clickEvent = new MouseEvent('click', {
                             bubbles: true,
                             cancelable: true,
-                            clientX: rect.width / 2,
-                            clientY: rect.height / 2
+                            view: window,
+                            clientX: targetX,
+                            clientY: targetY
                         });
                         
-                        document.elementFromPoint(rect.width / 2, rect.height / 2).dispatchEvent(clickEvent);
-                        console.log('✅ Clic realizado en centro del iframe');
+                        element.dispatchEvent(clickEvent);
                         return true;
                     }
-                """)
-
-                # ¡Aquí usamos la variable clicked!
-                logger.info(f"Resultado del clic: {clicked}")
+                    console.log('❌ No hay elemento en la posición específica');
+                    return false;
+                }
+                """,
                 
-                if clicked:
-                    logger.info("✅ Clic realizado en iframe hCaptcha")
-                    time.sleep(5)
+                # Estrategia 5: Clic en varias posiciones comunes del checkbox
+                """
+                () => {
+                    console.log('🎯 Estrategia 5: Probando múltiples posiciones...');
+                    const rect = document.body.getBoundingClientRect();
+                    
+                    // Posiciones comunes del checkbox hCaptcha
+                    const positions = [
+                        {x: 0.15, y: 0.60},  // Posición principal
+                        {x: 0.20, y: 0.55},  // Un poco a la derecha y arriba
+                        {x: 0.10, y: 0.65},  // Un poco a la izquierda y abajo
+                        {x: 0.25, y: 0.50},  // Más a la derecha y arriba
+                        {x: 0.30, y: 0.45},  // Esquina superior derecha
+                    ];
+                    
+                    for (let i = 0; i < positions.length; i++) {
+                        const pos = positions[i];
+                        const targetX = rect.width * pos.x;
+                        const targetY = rect.height * pos.y;
+                        
+                        console.log(`🎯 Probando posición ${i+1}: ${targetX}, ${targetY}`);
+                        
+                        const element = document.elementFromPoint(targetX, targetY);
+                        if (element) {
+                            console.log(`✅ Elemento encontrado en posición ${i+1}, haciendo clic...`);
+                            
+                            // Hacer clic en la posición
+                            const clickEvent = new MouseEvent('click', {
+                                bubbles: true,
+                                cancelable: true,
+                                view: window,
+                                clientX: targetX,
+                                clientY: targetY
+                            });
+                            
+                            element.dispatchEvent(clickEvent);
+                            return true;
+                        }
+                    }
+                    
+                    console.log('❌ No se encontró elemento en ninguna posición');
+                    return false;
+                }
+                """,
                 
-                # Verificar si se resolvió
-                page_content = page.content().lower()
-                if 'hcaptcha' not in page_content or 'i am human' not in page_content:
-                    logger.info("✅ Posiblemente resuelto manualmente")
-                    return True
-                
-            except Exception as e:
-                logger.warning(f"⚠️ No se pudo interactuar con iframe: {e}")
+                # Estrategia 6: Buscar cualquier elemento clickeable
+                """
+                () => {
+                    console.log('🎯 Estrategia 6: Buscando cualquier elemento clickeable...');
+                    const clickableSelectors = [
+                        'div', 'span', 'label', 'button', 'a',
+                        '[onclick]', '[tabindex]', '.clickable'
+                    ];
+                    
+                    for (let selector of clickableSelectors) {
+                        const elements = document.querySelectorAll(selector);
+                        for (let element of elements) {
+                            // Verificar si el elemento está visible
+                            const style = window.getComputedStyle(element);
+                            if (style.display !== 'none' && style.visibility !== 'hidden') {
+                                const rect = element.getBoundingClientRect();
+                                if (rect.width > 0 && rect.height > 0) {
+                                    console.log(`✅ Elemento clickeable encontrado (${selector}), haciendo clic...`);
+                                    element.click();
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    
+                    console.log('❌ No se encontraron elementos clickeables');
+                    return false;
+                }
+                """
+            ]
             
+            # Intentar cada estrategia
+            for i, strategy in enumerate(click_strategies):
+                logger.info(f"🔄 Intentando estrategia {i+1}/{len(click_strategies)}")
+                
+                try:
+                    clicked = hcaptcha_frame.evaluate(strategy)
+                    
+                    if clicked:
+                        logger.info(f"✅ Estrategia {i+1} exitosa - Clic realizado")
+                        time.sleep(3)
+                        
+                        # Verificar si el captcha desapareció
+                        page_content = page.content().lower()
+                        if 'hcaptcha' not in page_content and 'i am human' not in page_content:
+                            logger.info("✅ ¡Captcha resuelto manualmente!")
+                            return True
+                        else:
+                            # Esperar un poco más y verificar
+                            time.sleep(2)
+                            page_content = page.content().lower()
+                            if 'hcaptcha' not in page_content:
+                                logger.info("✅ ¡Captcha finalmente resuelto!")
+                                return True
+                            else:
+                                logger.info("⚠️ Clic realizado pero captcha aún visible")
+                    else:
+                        logger.info(f"❌ Estrategia {i+1} no funcionó")
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ Error en estrategia {i+1}: {e}")
+            
+            # Si ninguna estrategia funcionó completamente
+            logger.info("❌ Ninguna estrategia manual funcionó completamente")
             return False
             
         except Exception as e:
             logger.error(f"❌ Error bypass manual: {e}")
             return False
-
+    
 class PaymentAnalyzer:
     """Analizador de respuestas de pagos para Edupam"""
     
@@ -610,27 +761,32 @@ class EdupamChecker:
             return False
     
     def extract_hcaptcha_sitekey(self, page):
-        """Extraer site-key"""
+        """Extraer site-key solo del método que funciona"""
         site_key = None
         
         try:
-            # Método 1: Buscar en iframes
+            # Buscar en todos los iframes
             for frame in page.frames:
                 try:
                     frame_url = frame.url
                     if 'hcaptcha' in frame_url.lower():
-                        # Extraer sitekey de la URL
+                        logger.info(f"🔍 Analizando iframe hCaptcha: {frame_url[:100]}...")
+                        
+                        # Extraer sitekey de la URL - ESTE MÉTODO FUNCIONA
                         match = re.search(r'[?&]sitekey=([^&]+)', frame_url)
                         if match:
                             site_key = match.group(1)
-                            logger.info(f"✅ Site-key extraído de URL iframe: {site_key[:30]}...")
-                        break
+                            logger.info(f"✅ Site-key extraído: {site_key[:30]}...")
+                            return site_key  # Retornar inmediatamente
                 except:
-                    continue
+                    continue  # Continuar con el siguiente iframe si hay error
+            
+            logger.warning("❌ No se encontró site-key en ningún iframe")
+            return None
+            
         except Exception as e:
             logger.error(f"❌ Error extrayendo site-key: {e}")
-        
-        return site_key
+            return None
     
     def solve_captcha_if_present(self, page, card_last4):
         """Detectar y resolver hCaptcha si está presente"""
