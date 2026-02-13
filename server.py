@@ -1000,8 +1000,9 @@ class EdupamChecker:
                     
                     # Stripe necesita comunicación entre iframes
                     # Forzar que el iframe visible notifique al iframe invisible
+                    # ✅ CÓDIGO CORREGIDO:
                     page.evaluate("""
-                        () => {
+                        (solution) => {
                             // Buscar y notificar a Stripe
                             if (window.hcaptcha) {
                                 window.hcaptcha.execute();
@@ -1009,7 +1010,7 @@ class EdupamChecker:
                             
                             // Disparar evento personalizado
                             const event = new CustomEvent('hcaptchaResponse', {
-                                detail: { response: arguments[0] }
+                                detail: { response: solution }  # ✅ AHORA SÍ, solution está definido
                             });
                             window.dispatchEvent(event);
                         }
@@ -1042,7 +1043,7 @@ class EdupamChecker:
             logger.error(f"❌ Error en solve_captcha_if_present: {e}")
             return False
         
-        
+
     def check_single_card(self, card_string, amount=50):
         """Verificar una sola tarjeta"""
         card_last4 = card_string.split('|')[0][-4:] if '|' in card_string else '????'
