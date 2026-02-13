@@ -846,6 +846,52 @@ class EdupamChecker:
         
         logger.error("❌ NO se encontró iframe de desafío visible")
         return None, None
+    
+    def debug_hcaptcha_frames(self, page, card_last4, etapa):
+        """Inspecciona todos los frames y busca el campo h-captcha-response"""
+        logger.info(f"🔍 [DEBUG {etapa}] Inspeccionando frames para ****{card_last4}")
+        
+        frame_count = 0
+        hcaptcha_frames = []
+        
+        for i, frame in enumerate(page.frames):
+            frame_url = frame.url.lower()
+            frame_count += 1
+            
+            # Solo nos interesan frames de hCaptcha/Stripe
+            if 'hcaptcha' in frame_url or 'stripe' in frame_url:
+                info = {
+                    'index': i,
+                    'url': frame.url[:200],
+                    'has_field': False,
+                    'field_value': None
+                }
+                
+                # Buscar el campo dentro del frame
+                try:
+                    field_value = frame.evaluate("""
+                        () => {
+                            let f = document.querySelector('[name="h-captcha-response"]');
+                            if (!f) f = document.getElementById('h-captcha-response');
+                            return f ? f.value : null;
+                        }
+                    """)
+                    info['has_field'] = field_value is not None
+                    info['field_value'] = field_value[:50] if field_value else None
+                except Exception as e:
+                    info['error'] = str(e)[:50]
+                
+                hcaptcha_frames.append(info)
+                
+                logger.info(f"  Frame {i}: {frame.url[:100]}...")
+                logger.info(f"    ├─ ¿Tiene campo? {info['has_field']}")
+                if info.get('field_value'):
+                    logger.info(f"    └─ Valor: {info['field_value']}...")
+                if info.get('error'):
+                    logger.info(f"    └─ Error: {info['error']}")
+        
+        logger.info(f"📊 Total frames hCaptcha/Stripe: {len(hcaptcha_frames)} de {frame_count}")
+        return hcaptcha_frames
 
 
     def solve_captcha_if_present(self, page, card_last4):
@@ -879,11 +925,16 @@ class EdupamChecker:
                 logger.error("❌ API_KEY_ANTICAPTCHA no está configurada")
                 return False
             
+            self.debug_hcaptcha_frames(page, card_last4, "ANTES_MANUAL")
+
                         # 1. PRIMERO intentar bypass manual (porque vimos que el checkbox existe)
             logger.info("🔄 Intentando bypass manual primero...")
             if self.bypass_hcaptcha_manually(page, card_last4):
                 logger.info("✅ ¡Bypass manual exitoso!")
                 return True
+            
+            self.debug_hcaptcha_frames(page, card_last4, "DESPUES_MANUAL")
+
             
             
             # ========== RESOLVER CON ANTI-CAPTCHA ==========
