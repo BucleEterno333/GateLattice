@@ -1,27 +1,21 @@
-# Usa la imagen oficial de Playwright (basada en Ubuntu, con todo preinstalado)
-FROM mcr.microsoft.com/playwright:latest
+FROM mcr.microsoft.com/playwright:v1.40.0-focal
 
 WORKDIR /app
 
-# Copiar archivo de dependencias Python
-COPY requirements.txt .
-
 # Instalar dependencias Python
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copiar el resto de la aplicación
-COPY . .
-
-# Opcional: Si quieres asegurar que Firefox está disponible (ya lo trae la imagen)
-# Pero por si acaso, forzamos la instalación del browser específico
+# Forzar instalación de Firefox (por si la imagen no lo tuviera, aunque debería)
 RUN playwright install firefox
 
-# Exponer el puerto que usa tu servidor Flask
-EXPOSE 8080
+# Copiar toda la app
+COPY . .
 
-# Variables de entorno por defecto (puedes sobreescribirlas al correr)
+# Variables de entorno
 ENV HEADLESS=true
 ENV PORT=8080
 
-# Comando para iniciar la aplicación
+EXPOSE 8080
+
 CMD ["python", "server.py"]
