@@ -1,49 +1,27 @@
-FROM python:3.9-slim
+# Usa la imagen oficial de Playwright (basada en Ubuntu, con todo preinstalado)
+FROM mcr.microsoft.com/playwright:latest
 
 WORKDIR /app
 
-# Instalar dependencias esenciales
-RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    ca-certificates \
-    libnss3 \
-    libxss1 \
-    libxtst6 \
-    libasound2 \
-    libgbm1 \
-    libx11-xcb1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxdamage1 \
-    libxi6 \
-    libxrandr2 \
-    libxrender1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Instalar Chromium desde repositorio de Debian
-RUN apt-get update && apt-get install -y \
-    chromium \
-    chromium-common \
-    chromium-driver \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copiar requirements
+# Copiar archivo de dependencias Python
 COPY requirements.txt .
+
+# Instalar dependencias Python
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Instalar Playwright sin instalar browsers (usaremos Chromium del sistema)
-RUN pip install playwright==1.40.0
-
-# Configurar Playwright para usar Chromium del sistema
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-ENV CHROMIUM_BIN=/usr/bin/chromium
-
-# Copiar aplicación
+# Copiar el resto de la aplicación
 COPY . .
 
-# Exponer puerto
+# Opcional: Si quieres asegurar que Firefox está disponible (ya lo trae la imagen)
+# Pero por si acaso, forzamos la instalación del browser específico
+RUN playwright install firefox
+
+# Exponer el puerto que usa tu servidor Flask
 EXPOSE 8080
 
-# Comando para iniciar
+# Variables de entorno por defecto (puedes sobreescribirlas al correr)
+ENV HEADLESS=true
+ENV PORT=8080
+
+# Comando para iniciar la aplicación
 CMD ["python", "server.py"]
