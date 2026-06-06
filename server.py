@@ -202,7 +202,7 @@ class EduSession:
             }
             if self.proxy:
                 launch_options["proxy"] = self.proxy
-            self.browser = await self.playwright.chromium.launch(**launch_options)
+            self.browser = await self.playwright.firefox.launch(**launch_options)
             self.context = await self.browser.new_context(
                 user_agent=get_random_user_agent(),
                 viewport={'width': 1280, 'height': 720},
