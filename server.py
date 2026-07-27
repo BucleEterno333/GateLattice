@@ -51,8 +51,8 @@ def parse_proxy_string(proxy_string):
     if not proxy_string:
         return None
 
-    # Dividir en usuario:contraseña y host:puerto
     try:
+        # Dividir en usuario:contraseña y host:puerto
         auth, host = proxy_string.split('@', 1)
         username, password = auth.split(':', 1)
         # Asegurar que host tenga protocolo (si no, añadir http://)
@@ -72,9 +72,9 @@ proxy_config = None
 if PROXY_STRING:
     proxy_config = parse_proxy_string(PROXY_STRING)
     if proxy_config:
-        logger.info(f"Proxy configurado mediante PROXY_STRING: {proxy_config['server']}")
+        logger.info(f"✅ Proxy configurado mediante PROXY_STRING: {proxy_config['server']}")
     else:
-        logger.warning("PROXY_STRING inválida, se intentará usar variables individuales")
+        logger.warning("⚠️ PROXY_STRING inválida, se intentará usar variables individuales")
 
 if not proxy_config and PROXY_SERVER:
     # Fallback a variables individuales
@@ -83,7 +83,7 @@ if not proxy_config and PROXY_SERVER:
         'username': PROXY_USERNAME,
         'password': PROXY_PASSWORD
     }
-    logger.info(f"Proxy configurado mediante variables individuales: {PROXY_SERVER}")
+    logger.info(f"✅ Proxy configurado mediante variables individuales: {PROXY_SERVER}")
 
 # ==================== VARIABLES GLOBALES ====================
 checking_status = {
@@ -218,7 +218,7 @@ async def solve_captcha_if_present(page):
         logger.error(f"Error en solve_captcha: {e}")
         return False
 
-# ==================== CLASE EDU SESSION ====================
+# ==================== CLASE EDU SESSION (CORREGIDA) ====================
 class EduSession:
     def __init__(self):
         self.playwright = None
@@ -240,12 +240,25 @@ class EduSession:
         try:
             self.playwright = await async_playwright().start()
             logger.info("🚀 Iniciando navegador (EduSession ASYNC)...")
+            
+            # Asegurar que el proxy tenga el protocolo http://
+            if self.proxy:
+                proxy_server = self.proxy.get('server')
+                if proxy_server and not proxy_server.startswith(('http://', 'https://')):
+                    self.proxy['server'] = 'http://' + proxy_server
+            
             launch_options = {
                 "headless": HEADLESS,
                 "slow_mo": 50,
+                "firefox_user_prefs": {
+                    "network.cookie.cookieBehavior": 0,
+                    "privacy.trackingprotection.enabled": False,
+                    "dom.security.https_only_mode": False
+                }
             }
             if self.proxy:
                 launch_options["proxy"] = self.proxy
+            
             self.browser = await self.playwright.firefox.launch(**launch_options)
             self.context = await self.browser.new_context(
                 user_agent=get_random_user_agent(),
