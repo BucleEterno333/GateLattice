@@ -382,15 +382,20 @@ class EduSession:
             if API_KEY_2CAPTCHA:
                 await solve_captcha_if_present(page)
             
-            end_time = time.time() + 180
+            # ⏱️ TIMEOUT REDUCIDO A 30 SEGUNDOS PARA PRUEBAS
+            end_time = time.time() + 30
             final_status = "UNKNOWN"
             final_message = "Timeout"
             
             while time.time() < end_time:
                 try:
+                    elapsed = int(time.time() - (end_time - 30))
+                    logger.info(f"⏳ Polling #{elapsed}s - URL: {page.url}")
+
                     if "success" in page.url or "gracias" in page.url:
                         final_status = "LIVE"
                         final_message = "Redirección a página de éxito"
+                        logger.info(f"✅ Detected success URL: {page.url}")
                         break
                     
                     if stripe_data["body"]:
@@ -408,10 +413,12 @@ class EduSession:
                                 else:
                                     final_status = "DEAD"
                                     final_message = err.get("message", "Error de pago")
+                                logger.info(f"❌ Stripe error: {final_message}")
                                 break
                             elif body.get("status") == "succeeded":
                                 final_status = "LIVE"
                                 final_message = "Pago exitoso (Stripe)"
+                                logger.info("✅ Stripe succeeded")
                                 break
                     
                     try:
@@ -422,10 +429,12 @@ class EduSession:
                             if any(x in msg_lower for x in ["error", "por favor", "problema", "inválida", "incorrect", "falló"]):
                                 final_status = "DEAD"
                                 final_message = msg_text.strip()[:200]
+                                logger.info(f"❌ Mensaje de error: {final_message}")
                                 break
                             elif any(x in msg_lower for x in ["éxito", "exitoso", "realizado"]):
                                 final_status = "LIVE"
                                 final_message = msg_text.strip()
+                                logger.info(f"✅ Mensaje de éxito: {final_message}")
                                 break
                     except:
                         pass
@@ -436,6 +445,7 @@ class EduSession:
                         if any(k in frame_url for k in three_ds_keywords) and "hcaptcha" not in frame_url:
                             final_status = "3DS"
                             final_message = "3D Secure detectado"
+                            logger.info(f"🟡 3DS detectado en frame: {frame_url[:60]}")
                             break
                     if final_status != "UNKNOWN":
                         break
@@ -445,6 +455,7 @@ class EduSession:
                     if "card was declined" in content_lower or "tarjeta rechazada" in content_lower:
                         final_status = "DEAD"
                         final_message = "Declinación detectada en página"
+                        logger.info("❌ Declinación en body")
                         break
                     
                 except Exception as loop_e:
@@ -453,6 +464,11 @@ class EduSession:
                         raise loop_e
                 
                 await asyncio.sleep(1)
+            
+            # Si terminó por timeout, dejar mensaje claro
+            if final_status == "UNKNOWN":
+                final_message = "No se detectó resultado en el tiempo límite (posible bloqueo o 3DS no manejado)"
+                logger.warning(f"⚠️ {final_message}")
             
             status_map = {
                 "LIVE": "LIVE",
@@ -491,6 +507,8 @@ class EduSession:
                 page.remove_listener("response", handle_response)
             except:
                 pass
+
+
 
 # ==================== WORKER ====================
 async def process_cards_async(cards, amount, stop_on_live):
