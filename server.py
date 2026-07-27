@@ -34,28 +34,28 @@ EDUPAM_ENDPOINT = os.environ.get('EDUPAM_ENDPOINT', '/mx/dona/')
 DONATION_AMOUNT = int(os.environ.get('DONATION_AMOUNT', '50'))
 MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '5'))
 
-# NUEVA VARIABLE: PROXY_STRING (formato: usuario:contraseña@host:puerto)
+# ================================================================
+# 🔥 VARIABLE PARA CONTROLAR EL PROXY (cámbiala aquí)
+#    True  → usa el proxy configurado en PROXY_STRING
+#    False → NO usa proxy (conexión directa)
+# ================================================================
+USE_PROXY = False  # <--- Pon True o False según necesites
+
+# PROXY_STRING (solo se usa si USE_PROXY es True)
 PROXY_STRING = os.environ.get('PROXY_STRING', '')
 
-# Variables de proxy individuales (solo para compatibilidad si no se usa PROXY_STRING)
+# Variables de proxy individuales (por si acaso, solo si USE_PROXY es True)
 PROXY_SERVER = os.environ.get('PROXY_SERVER', '')
 PROXY_USERNAME = os.environ.get('PROXY_USERNAME', '')
 PROXY_PASSWORD = os.environ.get('PROXY_PASSWORD', '')
 
 # ==================== PARSEO DE PROXY_STRING ====================
 def parse_proxy_string(proxy_string):
-    """
-    Parsea una cadena con formato: usuario:contraseña@host:puerto
-    Retorna un dict con 'server', 'username', 'password' o None si falla.
-    """
     if not proxy_string:
         return None
-
     try:
-        # Dividir en usuario:contraseña y host:puerto
         auth, host = proxy_string.split('@', 1)
         username, password = auth.split(':', 1)
-        # Asegurar que host tenga protocolo (si no, añadir http://)
         if not host.startswith(('http://', 'https://')):
             host = 'http://' + host
         return {
@@ -67,23 +67,25 @@ def parse_proxy_string(proxy_string):
         logger.error(f"Error parseando PROXY_STRING: {e}")
         return None
 
-# Determinar configuración de proxy final
+# Determinar configuración de proxy final SOLO si USE_PROXY es True
 proxy_config = None
-if PROXY_STRING:
-    proxy_config = parse_proxy_string(PROXY_STRING)
-    if proxy_config:
-        logger.info(f"✅ Proxy configurado mediante PROXY_STRING: {proxy_config['server']}")
-    else:
-        logger.warning("⚠️ PROXY_STRING inválida, se intentará usar variables individuales")
+if USE_PROXY:
+    if PROXY_STRING:
+        proxy_config = parse_proxy_string(PROXY_STRING)
+        if proxy_config:
+            logger.info(f"✅ Proxy configurado mediante PROXY_STRING: {proxy_config['server']}")
+        else:
+            logger.warning("⚠️ PROXY_STRING inválida, se intentará usar variables individuales")
 
-if not proxy_config and PROXY_SERVER:
-    # Fallback a variables individuales
-    proxy_config = {
-        'server': PROXY_SERVER,
-        'username': PROXY_USERNAME,
-        'password': PROXY_PASSWORD
-    }
-    logger.info(f"✅ Proxy configurado mediante variables individuales: {PROXY_SERVER}")
+    if not proxy_config and PROXY_SERVER:
+        proxy_config = {
+            'server': PROXY_SERVER,
+            'username': PROXY_USERNAME,
+            'password': PROXY_PASSWORD
+        }
+        logger.info(f"✅ Proxy configurado mediante variables individuales: {PROXY_SERVER}")
+else:
+    logger.info("ℹ️ Proxy desactivado (USE_PROXY = False)")
 
 # ==================== VARIABLES GLOBALES ====================
 checking_status = {
@@ -227,8 +229,8 @@ class EduSession:
         self.page = None
         self.is_open = False
         self.proxy = None
-        # Usar la configuración de proxy global
-        if proxy_config:
+        # Solo configurar el proxy si USE_PROXY es True y hay configuración
+        if USE_PROXY and proxy_config:
             self.proxy = {
                 "server": proxy_config['server'],
                 "username": proxy_config['username'],
@@ -241,7 +243,7 @@ class EduSession:
             self.playwright = await async_playwright().start()
             logger.info("🚀 Iniciando navegador (EduSession ASYNC)...")
             
-            # Asegurar que el proxy tenga el protocolo http://
+            # Asegurar que el proxy tenga el protocolo http:// (solo si existe)
             if self.proxy:
                 proxy_server = self.proxy.get('server')
                 if proxy_server and not proxy_server.startswith(('http://', 'https://')):
@@ -585,7 +587,7 @@ def index():
             "headless": HEADLESS,
             "donation_amount": DONATION_AMOUNT,
             "max_workers": MAX_WORKERS,
-            "proxy": "enabled" if proxy_config else "disabled",
+            "proxy": "enabled" if (USE_PROXY and proxy_config) else "disabled",
             "2captcha": "enabled" if API_KEY_2CAPTCHA else "disabled"
         }
     })
@@ -599,7 +601,7 @@ def health_check():
         'timestamp': dt.now().isoformat(),
         'features': {
             '2captcha': bool(API_KEY_2CAPTCHA),
-            'proxy': bool(proxy_config),
+            'proxy': bool(USE_PROXY and proxy_config),
             'async_playwright': True
         }
     })
@@ -709,6 +711,6 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     debug = os.environ.get('FLASK_ENV', 'production') == 'development'
     logger.info(f"🚀 Servidor iniciado en puerto {port}")
-    logger.info(f"🔧 Headless: {HEADLESS}, Proxy: {'Sí' if proxy_config else 'No'}")
+    logger.info(f"🔧 Headless: {HEADLESS}, Proxy: {'Sí' if (USE_PROXY and proxy_config) else 'No'}")
     logger.info(f"🧩 2Captcha: {'Habilitado' if API_KEY_2CAPTCHA else 'Deshabilitado'}")
     app.run(host='0.0.0.0', port=port, debug=debug)
