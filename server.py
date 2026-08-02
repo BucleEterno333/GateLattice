@@ -250,8 +250,8 @@ class EduSession:
             self.is_open = True
             url = f"{EDUPAM_BASE_URL}{EDUPAM_ENDPOINT}"
             logger.info(f"Navegando a {url}...")
-            # TIMEOUT DE NAVEGACIÓN A 180 SEGUNDOS
-            await self.page.goto(url, timeout=180000, wait_until="domcontentloaded")
+            # TIMEOUT DE NAVEGACIÓN A 600 SEGUNDOS
+            await self.page.goto(url, timeout=600000, wait_until="domcontentloaded")
             return True
         except Exception as e:
             logger.error(f"Error start_browser: {e}")
@@ -309,12 +309,12 @@ class EduSession:
             current_url = page.url.rstrip('/')
             target_url = f"{EDUPAM_BASE_URL}{EDUPAM_ENDPOINT}".rstrip('/')
             if current_url != target_url:
-                await page.goto(target_url, timeout=120000)  # 120s
+                await page.goto(target_url, timeout=600000)  # 600s
             else:
                 await page.reload()
             
-            # Esperar formulario con timeout de 120s
-            await page.wait_for_selector('input[name="name"]', timeout=120000)
+            # Esperar formulario con timeout de 600s
+            await page.wait_for_selector('input[name="name"]', timeout=600000)
             
             if EDUPAM_DONOR_NAME and EDUPAM_DONOR_LASTNAME:
                 name = EDUPAM_DONOR_NAME
